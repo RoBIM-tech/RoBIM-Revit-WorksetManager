@@ -22,13 +22,13 @@ public static class WorksetCollector
         return result.OrderBy(w => w.Name, StringComparer.CurrentCultureIgnoreCase).ToList();
     }
 
-    public static List<CategoryWorksetItem> CollectHierarchy(
+    public static List<WorksetHierarchyNode> CollectHierarchyTree(
         Document doc,
         IReadOnlyList<WorksetInfo> standardWorksets)
     {
         var wsLookup = standardWorksets.ToDictionary(w => w.Id, w => w);
 
-        // 1. 모든 일반 인스턴스 요소 수집 및 TypeId별 그룹화
+        // 1. 모든 인스턴스 요소 수집 및 TypeId별 매핑 (도면/뷰 제외)
         var instancesByTypeId = new Dictionary<ElementId, List<(ElementId ElementId, int WorksetId)>>();
 
         var instanceCollector = new FilteredElementCollector(doc)
@@ -37,6 +37,10 @@ public static class WorksetCollector
         foreach (var elem in instanceCollector)
         {
             if (elem is Group) continue;
+
+            // 도면/뷰 카테고리 제외
+            if (elem.Category != null && IsExcludedCategory(elem.Category))
+                continue;
 
             var wsParam = elem.get_Parameter(BuiltInParameter.ELEM_PARTITION_PARAM);
             if (wsParam == null) continue;
@@ -53,20 +57,24 @@ public static class WorksetCollector
             list.Add((elem.Id, wsId));
         }
 
-        // 2. 일반 ElementType 수집 및 카테고리/패밀리 구성
+        // 2. 모델에 존재하는 ElementType 수집 (배치된 요소가 있는 것만!)
         var typeCollector = new FilteredElementCollector(doc)
             .OfClass(typeof(ElementType))
             .Cast<ElementType>();
 
-        var categoriesMap = new Dictionary<string, CategoryWorksetItem>();
-        var familiesMap = new Dictionary<(string Category, string Family), FamilyWorksetItem>();
+        var categoriesMap = new Dictionary<string, WorksetHierarchyNode>();
+        var familiesMap = new Dictionary<(string Category, string Family), WorksetHierarchyNode>();
 
         foreach (var elementType in typeCollector)
         {
             if (elementType is GroupType) continue;
 
             var category = elementType.Category;
-            if (category == null || category.CategoryType != CategoryType.Model)
+            if (category == null || IsExcludedCategory(category))
+                continue;
+
+            // 미배치(배치된 인스턴스 수가 0인 것)는 완전히 제외!
+            if (!instancesByTypeId.TryGetValue(elementType.Id, out var instList) || instList.Count == 0)
                 continue;
 
             string categoryName = category.Name;
@@ -82,92 +90,97 @@ public static class WorksetCollector
                     familyName = categoryName;
                 }
             }
-
             string typeName = elementType.Name;
 
-            // 카테고리 확보
-            if (!categoriesMap.TryGetValue(categoryName, out var catItem))
+            // 1단계: 카테고리 노드
+            if (!categoriesMap.TryGetValue(categoryName, out var catNode))
             {
-                catItem = new CategoryWorksetItem(categoryName);
-                categoriesMap[categoryName] = catItem;
+                catNode = new WorksetHierarchyNode(HierarchyNodeType.Category, categoryName, 0, null);
+                categoriesMap[categoryName] = catNode;
             }
 
-            // 패밀리 확보
+            // 2단계: 패밀리 노드
             var famKey = (categoryName, familyName);
-            if (!familiesMap.TryGetValue(famKey, out var familyItem))
+            if (!familiesMap.TryGetValue(famKey, out var famNode))
             {
-                familyItem = new FamilyWorksetItem(catItem, familyName);
-                familiesMap[famKey] = familyItem;
-                catItem.Families.Add(familyItem);
+                famNode = new WorksetHierarchyNode(HierarchyNodeType.Family, familyName, 1, catNode);
+                familiesMap[famKey] = famNode;
+                catNode.Children.Add(famNode);
             }
 
-            // 인스턴스 정보 확인 및 InitialWorkset 결정
-            var instanceIds = new List<ElementId>();
-            WorksetInfo initialWorkset = WorksetInfo.Unplaced;
-
-            if (instancesByTypeId.TryGetValue(elementType.Id, out var instList) && instList.Count > 0)
+            // 3단계: 타입 노드
+            var typeNode = new WorksetHierarchyNode(HierarchyNodeType.Type, typeName, 2, famNode)
             {
-                instanceIds = instList.Select(i => i.ElementId).ToList();
-                var distinctWsIds = instList.Select(i => i.WorksetId).Distinct().ToList();
+                ElementTypeId = elementType.Id
+            };
+            typeNode.InstanceIds.AddRange(instList.Select(i => i.ElementId));
 
-                if (distinctWsIds.Count == 1)
-                {
-                    int wId = distinctWsIds[0];
-                    if (wsLookup.TryGetValue(wId, out var found))
-                        initialWorkset = found;
-                    else
-                        initialWorkset = new WorksetInfo(wId, $"Workset {wId}", new WorksetId(wId));
-                }
-                else
-                {
-                    initialWorkset = WorksetInfo.Mixed;
-                }
+            // 초기 작업세트 계산
+            var distinctWsIds = instList.Select(i => i.WorksetId).Distinct().ToList();
+            if (distinctWsIds.Count == 1)
+            {
+                int wId = distinctWsIds[0];
+                typeNode.InitialWorkset = wsLookup.TryGetValue(wId, out var found)
+                    ? found
+                    : new WorksetInfo(wId, $"Workset {wId}", new WorksetId(wId));
             }
             else
             {
-                var typeWsParam = elementType.get_Parameter(BuiltInParameter.ELEM_PARTITION_PARAM);
-                if (typeWsParam != null && wsLookup.TryGetValue(typeWsParam.AsInteger(), out var found))
-                {
-                    initialWorkset = found;
-                }
+                typeNode.InitialWorkset = WorksetInfo.Mixed;
             }
+            typeNode.SelectedWorkset = typeNode.InitialWorkset;
+            typeNode.SetupAvailableWorksets(standardWorksets);
 
-            var typeItem = new TypeWorksetItem(
-                elementType.Id,
-                typeName,
-                familyItem,
-                instanceIds,
-                initialWorkset,
-                standardWorksets);
-
-            familyItem.Types.Add(typeItem);
+            famNode.Children.Add(typeNode);
         }
 
-        // 3. 모델 그룹(Group & GroupType) 수집 및 계층 추가
+        // 3. 모델 그룹(Group & GroupType) 수집 (배치된 그룹만 포함!)
         CollectGroupHierarchy(doc, standardWorksets, wsLookup, categoriesMap);
 
-        // 4. 모든 카테고리/패밀리의 초기 작업세트 및 가용 작업세트 목록 계산
+        // 4. 패밀리 및 카테고리의 InitialWorkset 및 가용 목록 계산
         foreach (var cat in categoriesMap.Values)
         {
-            cat.CalculateInitialWorkset(standardWorksets);
+            CalculateCategoryAndFamilyInitialWorkset(cat, standardWorksets);
         }
 
         return categoriesMap.Values
             .OrderBy(c => c.IsGroup ? 1 : 0)
-            .ThenBy(c => c.CategoryName, StringComparer.CurrentCultureIgnoreCase)
+            .ThenBy(c => c.Name, StringComparer.CurrentCultureIgnoreCase)
             .ToList();
+    }
+
+    private static bool IsExcludedCategory(Category category)
+    {
+        if (category == null) return true;
+        if (category.CategoryType != CategoryType.Model) return true;
+
+        var bic = (BuiltInCategory)category.Id.Value;
+        return bic switch
+        {
+            BuiltInCategory.OST_Sheets => true,
+            BuiltInCategory.OST_Views => true,
+            BuiltInCategory.OST_Viewports => true,
+            BuiltInCategory.OST_TitleBlocks => true,
+            BuiltInCategory.OST_ScheduleGraphics => true,
+            BuiltInCategory.OST_Cameras => true,
+            BuiltInCategory.OST_RasterImages => true,
+            BuiltInCategory.OST_ProjectInformation => true,
+            _ => false
+        };
     }
 
     private static void CollectGroupHierarchy(
         Document doc,
         IReadOnlyList<WorksetInfo> standardWorksets,
         Dictionary<int, WorksetInfo> wsLookup,
-        Dictionary<string, CategoryWorksetItem> categoriesMap)
+        Dictionary<string, WorksetHierarchyNode> categoriesMap)
     {
         var groupInstances = new FilteredElementCollector(doc)
             .OfClass(typeof(Group))
             .Cast<Group>()
             .ToList();
+
+        if (groupInstances.Count == 0) return;
 
         var groupsByTypeId = new Dictionary<ElementId, List<(ElementId ElementId, int WorksetId)>>();
         foreach (var grp in groupInstances)
@@ -191,56 +204,69 @@ public static class WorksetCollector
             .Cast<GroupType>()
             .ToList();
 
-        if (groupTypes.Count == 0 && groupInstances.Count == 0) return;
-
         string groupCategoryName = "모델 그룹 (Model Groups)";
-        var groupCatItem = new CategoryWorksetItem(groupCategoryName, isGroup: true);
-        var groupFamilyItem = new FamilyWorksetItem(groupCatItem, "모델 그룹", isGroup: true);
-        groupCatItem.Families.Add(groupFamilyItem);
+        var groupCatNode = new WorksetHierarchyNode(HierarchyNodeType.Category, groupCategoryName, 0, null, isGroup: true);
+        var groupFamNode = new WorksetHierarchyNode(HierarchyNodeType.Family, "모델 그룹", 1, groupCatNode, isGroup: true);
+        groupCatNode.Children.Add(groupFamNode);
 
         foreach (var gt in groupTypes)
         {
-            var instanceIds = new List<ElementId>();
-            WorksetInfo initialWorkset = WorksetInfo.Unplaced;
+            if (!groupsByTypeId.TryGetValue(gt.Id, out var gList) || gList.Count == 0)
+                continue; // 미배치 그룹 제외
 
-            if (groupsByTypeId.TryGetValue(gt.Id, out var gList) && gList.Count > 0)
+            var typeNode = new WorksetHierarchyNode(HierarchyNodeType.Type, gt.Name, 2, groupFamNode, isGroup: true)
             {
-                instanceIds = gList.Select(i => i.ElementId).ToList();
-                var distinctWsIds = gList.Select(i => i.WorksetId).Distinct().ToList();
+                ElementTypeId = gt.Id
+            };
+            typeNode.InstanceIds.AddRange(gList.Select(i => i.ElementId));
 
-                if (distinctWsIds.Count == 1)
-                {
-                    int wId = distinctWsIds[0];
-                    if (wsLookup.TryGetValue(wId, out var found))
-                        initialWorkset = found;
-                    else
-                        initialWorkset = new WorksetInfo(wId, $"Workset {wId}", new WorksetId(wId));
-                }
-                else
-                {
-                    initialWorkset = WorksetInfo.Mixed;
-                }
+            var distinctWsIds = gList.Select(i => i.WorksetId).Distinct().ToList();
+            if (distinctWsIds.Count == 1)
+            {
+                int wId = distinctWsIds[0];
+                typeNode.InitialWorkset = wsLookup.TryGetValue(wId, out var found)
+                    ? found
+                    : new WorksetInfo(wId, $"Workset {wId}", new WorksetId(wId));
             }
             else
             {
-                var typeWsParam = gt.get_Parameter(BuiltInParameter.ELEM_PARTITION_PARAM);
-                if (typeWsParam != null && wsLookup.TryGetValue(typeWsParam.AsInteger(), out var found))
-                {
-                    initialWorkset = found;
-                }
+                typeNode.InitialWorkset = WorksetInfo.Mixed;
             }
+            typeNode.SelectedWorkset = typeNode.InitialWorkset;
+            typeNode.SetupAvailableWorksets(standardWorksets);
 
-            var typeItem = new TypeWorksetItem(
-                gt.Id,
-                gt.Name,
-                groupFamilyItem,
-                instanceIds,
-                initialWorkset,
-                standardWorksets);
-
-            groupFamilyItem.Types.Add(typeItem);
+            groupFamNode.Children.Add(typeNode);
         }
 
-        categoriesMap[groupCategoryName] = groupCatItem;
+        if (groupFamNode.Children.Count > 0)
+        {
+            categoriesMap[groupCategoryName] = groupCatNode;
+        }
+    }
+
+    private static void CalculateCategoryAndFamilyInitialWorkset(
+        WorksetHierarchyNode catNode,
+        IReadOnlyList<WorksetInfo> standardWorksets)
+    {
+        foreach (var famNode in catNode.Children)
+        {
+            var famDistinct = famNode.Children.Select(c => c.InitialWorkset).Distinct().ToList();
+            if (famDistinct.Count == 1 && !famDistinct[0].IsSpecial)
+                famNode.InitialWorkset = famDistinct[0];
+            else
+                famNode.InitialWorkset = WorksetInfo.Mixed;
+
+            famNode.SelectedWorkset = famNode.InitialWorkset;
+            famNode.SetupAvailableWorksets(standardWorksets);
+        }
+
+        var catDistinct = catNode.Children.Select(f => f.InitialWorkset).Distinct().ToList();
+        if (catDistinct.Count == 1 && !catDistinct[0].IsSpecial)
+            catNode.InitialWorkset = catDistinct[0];
+        else
+            catNode.InitialWorkset = WorksetInfo.Mixed;
+
+        catNode.SelectedWorkset = catNode.InitialWorkset;
+        catNode.SetupAvailableWorksets(standardWorksets);
     }
 }

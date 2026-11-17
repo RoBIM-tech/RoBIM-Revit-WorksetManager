@@ -24,30 +24,20 @@ public sealed class WorksetManagerWindow : Window
 {
     private readonly Document _doc;
     private readonly List<WorksetInfo> _worksets;
-    private readonly List<CategoryWorksetItem> _allCategories;
+    private readonly List<WorksetHierarchyNode> _allRoots;
 
-    private readonly ObservableCollection<CategoryWorksetItem> _filteredCategories = new();
-    private readonly ObservableCollection<FamilyWorksetItem> _currentFamilies = new();
-    private readonly ObservableCollection<TypeWorksetItem> _currentTypes = new();
-
+    private readonly ObservableCollection<WorksetHierarchyNode> _displayedNodes = new();
     private readonly WpfTextBox _searchBox;
-    private readonly CheckBox _onlyPlacedCheckBox;
     private readonly ComboBox _bulkWorksetCombo;
     private readonly Button _btnBulkApply;
 
-    private readonly DataGrid _categoryGrid;
-    private readonly DataGrid _familyGrid;
-    private readonly DataGrid _typeGrid;
-
-    private readonly GridCheckBehavior _catCheckBehavior;
-    private readonly GridCheckBehavior _famCheckBehavior;
-    private readonly GridCheckBehavior _typeCheckBehavior;
-
-    private readonly TextBlock _categoryHeaderLabel;
-    private readonly TextBlock _familyHeaderLabel;
-    private readonly TextBlock _typeHeaderLabel;
+    private readonly DataGrid _treeGrid;
+    private readonly GridCheckBehavior _gridCheckBehavior;
     private readonly TextBlock _summaryLabel;
     private readonly Button _applyButton;
+
+    private string _currentSortProperty = "Name";
+    private ListSortDirection _currentSortDirection = ListSortDirection.Ascending;
 
     public WorksetManagerWindow(Document doc)
     {
@@ -56,29 +46,32 @@ public sealed class WorksetManagerWindow : Window
         var version = Assembly.GetExecutingAssembly()
             .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion.Split('+')[0]
             ?? Assembly.GetExecutingAssembly().GetName().Version?.ToString(3)
-            ?? "0.1.0-test.3";
+            ?? "0.1.0-test.4";
         Title = $"타입별 작업 세트 관리 · {version} · TEST";
 
-        Width = 1260;
-        Height = 750;
-        MinWidth = 1000;
-        MinHeight = 560;
+        Width = 1100;
+        Height = 720;
+        MinWidth = 900;
+        MinHeight = 540;
         WindowStartupLocation = WindowStartupLocation.CenterScreen;
         RoBimTheme.Apply(this);
 
         // 1. 작업세트 수집
         _worksets = WorksetCollector.GetWorksets(_doc);
 
-        // 2. 카테고리 > 패밀리 > 타입 3단계 계층 수집 (그룹 포함 및 초기 작업세트 계산)
-        _allCategories = WorksetCollector.CollectHierarchy(_doc, _worksets);
+        // 2. 카테고리 > 패밀리 > 타입 트리 수집 (도면 및 미배치 제외, 그룹 포함)
+        _allRoots = WorksetCollector.CollectHierarchyTree(_doc, _worksets);
 
-        // UI 레이아웃 빌드
+        // 초기 정렬 (이름 오름차순)
+        SortHierarchy("Name", ListSortDirection.Ascending);
+
+        // UI 구성
         var root = new WpfGrid { Margin = RoBimTheme.ContentMargin };
-        root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto }); // 0: Toolbar & Filters
-        root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) }); // 1: 3단 Panels
-        root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto }); // 2: Footer & Action Buttons
+        root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto }); // 0: Toolbar
+        root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) }); // 1: TreeGrid
+        root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto }); // 2: Footer
 
-        // ----------------- Row 0: 필터 및 일괄 적용 툴바 -----------------
+        // ----------------- Row 0: 상단 툴바 -----------------
         var toolbarPanel = new Border
         {
             Padding = new Thickness(8),
@@ -91,817 +84,608 @@ public sealed class WorksetManagerWindow : Window
 
         var toolbarGrid = new WpfGrid();
         toolbarGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto }); // 검색 라벨
-        toolbarGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(220) }); // 검색 박스
-        toolbarGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto }); // 배치된 것만 체크
+        toolbarGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(240) }); // 검색창
+        toolbarGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto }); // 펼치기/접기 버튼들
         toolbarGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) }); // 여백
         toolbarGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto }); // 일괄 지정 콤보 및 버튼
 
         var searchLabel = new TextBlock
         {
-            Text = "통합 검색:",
+            Text = "검색:",
             VerticalAlignment = VerticalAlignment.Center,
-            Margin = new Thickness(0, 0, 6, 0),
-            FontWeight = FontWeights.SemiBold
+            FontWeight = FontWeights.SemiBold,
+            Margin = new Thickness(0, 0, 6, 0)
         };
         WpfGrid.SetColumn(searchLabel, 0);
+        toolbarGrid.Children.Add(searchLabel);
 
         _searchBox = new WpfTextBox
         {
-            Height = 26,
             VerticalAlignment = VerticalAlignment.Center,
-            VerticalContentAlignment = VerticalAlignment.Center,
-            Margin = new Thickness(0, 0, 15, 0)
+            Padding = new Thickness(4, 2, 4, 2)
         };
-        _searchBox.TextChanged += (_, _) => ApplyFilter();
+        _searchBox.TextChanged += (s, e) => RefreshDisplayedNodes();
         WpfGrid.SetColumn(_searchBox, 1);
+        toolbarGrid.Children.Add(_searchBox);
 
-        _onlyPlacedCheckBox = new CheckBox
+        var expandCollapsePanel = new StackPanel
         {
-            Content = "배치된 인스턴스만 표시 (그룹 포함)",
-            IsChecked = true,
-            VerticalAlignment = VerticalAlignment.Center,
-            Margin = new Thickness(0, 0, 15, 0)
+            Orientation = Orientation.Horizontal,
+            Margin = new Thickness(12, 0, 0, 0)
         };
-        _onlyPlacedCheckBox.Click += (_, _) => ApplyFilter();
-        WpfGrid.SetColumn(_onlyPlacedCheckBox, 2);
 
-        // 우측 일괄 지정 영역
-        var bulkStack = new StackPanel
+        var btnExpandAll = new Button
+        {
+            Content = "모두 펼치기",
+            Padding = new Thickness(8, 3, 8, 3),
+            Margin = new Thickness(0, 0, 4, 0)
+        };
+        btnExpandAll.Click += (s, e) => SetAllExpanded(true);
+        expandCollapsePanel.Children.Add(btnExpandAll);
+
+        var btnCollapseAll = new Button
+        {
+            Content = "모두 접기",
+            Padding = new Thickness(8, 3, 8, 3)
+        };
+        btnCollapseAll.Click += (s, e) => SetAllExpanded(false);
+        expandCollapsePanel.Children.Add(btnCollapseAll);
+
+        WpfGrid.SetColumn(expandCollapsePanel, 2);
+        toolbarGrid.Children.Add(expandCollapsePanel);
+
+        // 일괄 지정 패널
+        var bulkPanel = new StackPanel
         {
             Orientation = Orientation.Horizontal,
             VerticalAlignment = VerticalAlignment.Center
         };
-        bulkStack.Children.Add(new TextBlock
+
+        var bulkLabel = new TextBlock
         {
             Text = "선택 항목 일괄 지정:",
             VerticalAlignment = VerticalAlignment.Center,
-            Margin = new Thickness(0, 0, 6, 0),
-            FontWeight = FontWeights.SemiBold
-        });
+            FontWeight = FontWeights.SemiBold,
+            Margin = new Thickness(0, 0, 6, 0)
+        };
+        bulkPanel.Children.Add(bulkLabel);
 
         _bulkWorksetCombo = new ComboBox
         {
-            Height = 26,
-            Width = 140,
+            Width = 180,
             ItemsSource = _worksets,
             DisplayMemberPath = "Name",
             Margin = new Thickness(0, 0, 6, 0)
         };
         if (_worksets.Count > 0) _bulkWorksetCombo.SelectedIndex = 0;
-        bulkStack.Children.Add(_bulkWorksetCombo);
+        bulkPanel.Children.Add(_bulkWorksetCombo);
 
         _btnBulkApply = new Button
         {
             Content = "선택 일괄 적용",
-            Height = 26,
-            Padding = new Thickness(10, 2, 10, 2)
+            Padding = new Thickness(10, 3, 10, 3)
         };
-        _btnBulkApply.Click += OnBulkApplyClick;
-        bulkStack.Children.Add(_btnBulkApply);
+        _btnBulkApply.Click += OnBulkApplyClicked;
+        bulkPanel.Children.Add(_btnBulkApply);
 
-        WpfGrid.SetColumn(bulkStack, 4);
+        WpfGrid.SetColumn(bulkPanel, 4);
+        toolbarGrid.Children.Add(bulkPanel);
 
-        toolbarGrid.Children.Add(searchLabel);
-        toolbarGrid.Children.Add(_searchBox);
-        toolbarGrid.Children.Add(_onlyPlacedCheckBox);
-        toolbarGrid.Children.Add(bulkStack);
         toolbarPanel.Child = toolbarGrid;
         WpfGrid.SetRow(toolbarPanel, 0);
         root.Children.Add(toolbarPanel);
 
-        // ----------------- Row 1: 3단 분할 패널 (카테고리 - 패밀리 - 타입) -----------------
-        var bodyGrid = new WpfGrid();
-        bodyGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(30, GridUnitType.Star) }); // Col 0: 카테고리
-        bodyGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(6) }); // Splitter 1
-        bodyGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(34, GridUnitType.Star) }); // Col 2: 패밀리
-        bodyGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(6) }); // Splitter 2
-        bodyGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(36, GridUnitType.Star) }); // Col 4: 세부 타입
-
-        // --- 1열: 카테고리 패널 ---
-        var catPanel = new DockPanel();
-        _categoryHeaderLabel = new TextBlock
+        // ----------------- Row 1: 단일 계층 Tree-Grid (DataGrid) -----------------
+        _treeGrid = new DataGrid
         {
-            Text = "🏷️ 카테고리 목록",
-            FontWeight = FontWeights.Bold,
-            FontSize = 13,
-            Margin = new Thickness(0, 0, 0, 6)
+            AutoGenerateColumns = false,
+            CanUserAddRows = false,
+            CanUserDeleteRows = false,
+            CanUserResizeRows = false,
+            CanUserSortColumns = true,
+            HeadersVisibility = DataGridHeadersVisibility.All,
+            SelectionMode = DataGridSelectionMode.Extended,
+            SelectionUnit = DataGridSelectionUnit.FullRow,
+            GridLinesVisibility = DataGridGridLinesVisibility.Horizontal,
+            HorizontalGridLinesBrush = new SolidColorBrush(MediaColor.FromRgb(230, 230, 230)),
+            ItemsSource = _displayedNodes,
+            BorderBrush = SystemColors.ActiveBorderBrush,
+            BorderThickness = new Thickness(1)
         };
-        DockPanel.SetDock(_categoryHeaderLabel, Dock.Top);
-        catPanel.Children.Add(_categoryHeaderLabel);
 
-        _categoryGrid = CreateCategoryDataGrid();
-        catPanel.Children.Add(_categoryGrid);
-        WpfGrid.SetColumn(catPanel, 0);
-        bodyGrid.Children.Add(catPanel);
+        _treeGrid.Sorting += OnTreeGridSorting;
 
-        // RoBIM 표준 표 입력 엔진 연결 (열 선택 + 체크박스 다중 처리)
-        new GridColumnSelection(_categoryGrid, fullRows: true);
-        _catCheckBehavior = new GridCheckBehavior(
-            _categoryGrid,
-            cell => cell.Column == _categoryGrid.Columns[0] ? "check" : null,
-            cell => (cell.Item as CategoryWorksetItem)?.IsSelected,
+        // 1) 체크박스 열
+        var checkCol = new DataGridCheckBoxColumn
+        {
+            Header = "선택",
+            Width = 46,
+            CanUserSort = false,
+            Binding = new WpfBinding("IsSelected")
+            {
+                Mode = BindingMode.TwoWay,
+                UpdateSourceTrigger = UpdateSourceTrigger.PropertyChanged
+            },
+            ElementStyle = new Style(typeof(CheckBox))
+            {
+                Setters =
+                {
+                    new Setter(CheckBox.HorizontalAlignmentProperty, HorizontalAlignment.Center),
+                    new Setter(CheckBox.VerticalAlignmentProperty, VerticalAlignment.Center)
+                }
+            }
+        };
+        _treeGrid.Columns.Add(checkCol);
+
+        // 2) 이름 (프로젝트 브라우저 스타일 계층 트리: 인덴트 + 토글 심볼 + 아이콘 + 이름)
+        var nameCol = new DataGridTemplateColumn
+        {
+            Header = "이름 (프로젝트 브라우저 트리)",
+            Width = new DataGridLength(1, DataGridLengthUnitType.Star),
+            SortMemberPath = "Name"
+        };
+        nameCol.SortDirection = ListSortDirection.Ascending;
+
+        var namePanelFactory = new FrameworkElementFactory(typeof(StackPanel));
+        namePanelFactory.SetValue(StackPanel.OrientationProperty, Orientation.Horizontal);
+        namePanelFactory.SetBinding(StackPanel.MarginProperty, new WpfBinding("IndentMargin"));
+
+        // 토글 버튼 (▼ / ▶)
+        var toggleBtnFactory = new FrameworkElementFactory(typeof(Button));
+        toggleBtnFactory.SetBinding(Button.ContentProperty, new WpfBinding("ExpandSymbol"));
+        toggleBtnFactory.SetValue(Button.BackgroundProperty, Brushes.Transparent);
+        toggleBtnFactory.SetValue(Button.BorderThicknessProperty, new Thickness(0));
+        toggleBtnFactory.SetValue(Button.PaddingProperty, new Thickness(2, 0, 4, 0));
+        toggleBtnFactory.SetValue(Button.CursorProperty, Cursors.Hand);
+        toggleBtnFactory.AddHandler(Button.ClickEvent, new RoutedEventHandler(OnToggleExpandClicked));
+        namePanelFactory.AppendChild(toggleBtnFactory);
+
+        // 아이콘 심볼
+        var iconFactory = new FrameworkElementFactory(typeof(TextBlock));
+        iconFactory.SetBinding(TextBlock.TextProperty, new WpfBinding("IconSymbol"));
+        iconFactory.SetValue(TextBlock.MarginProperty, new Thickness(0, 0, 6, 0));
+        iconFactory.SetValue(TextBlock.VerticalAlignmentProperty, VerticalAlignment.Center);
+        namePanelFactory.AppendChild(iconFactory);
+
+        // 이름 텍스트
+        var nameTextFactory = new FrameworkElementFactory(typeof(TextBlock));
+        nameTextFactory.SetBinding(TextBlock.TextProperty, new WpfBinding("Name"));
+        nameTextFactory.SetValue(TextBlock.VerticalAlignmentProperty, VerticalAlignment.Center);
+        namePanelFactory.AppendChild(nameTextFactory);
+
+        nameCol.CellTemplate = new DataTemplate { VisualTree = namePanelFactory };
+        _treeGrid.Columns.Add(nameCol);
+
+        // 3) 인스턴스 수 열
+        var countCol = new DataGridTextColumn
+        {
+            Header = "요소 수",
+            Width = 90,
+            Binding = new WpfBinding("InstanceCount"),
+            SortMemberPath = "InstanceCount",
+            ElementStyle = new Style(typeof(TextBlock))
+            {
+                Setters =
+                {
+                    new Setter(TextBlock.TextAlignmentProperty, TextAlignment.Right),
+                    new Setter(TextBlock.VerticalAlignmentProperty, VerticalAlignment.Center),
+                    new Setter(TextBlock.MarginProperty, new Thickness(0, 0, 8, 0))
+                }
+            }
+        };
+        _treeGrid.Columns.Add(countCol);
+
+        // 4) 작업 세트 드롭다운 열
+        var worksetCol = new DataGridTemplateColumn
+        {
+            Header = "작업 세트",
+            Width = 240,
+            CanUserSort = false
+        };
+        var comboFactory = new FrameworkElementFactory(typeof(ComboBox));
+        comboFactory.SetBinding(ComboBox.ItemsSourceProperty, new WpfBinding("AvailableWorksets"));
+        comboFactory.SetBinding(ComboBox.SelectedItemProperty, new WpfBinding("SelectedWorkset")
+        {
+            Mode = BindingMode.TwoWay,
+            UpdateSourceTrigger = UpdateSourceTrigger.PropertyChanged
+        });
+        comboFactory.SetValue(ComboBox.DisplayMemberPathProperty, "Name");
+        comboFactory.SetValue(ComboBox.VerticalAlignmentProperty, VerticalAlignment.Center);
+        comboFactory.SetValue(ComboBox.MarginProperty, new Thickness(4, 2, 4, 2));
+        worksetCol.CellTemplate = new DataTemplate { VisualTree = comboFactory };
+        _treeGrid.Columns.Add(worksetCol);
+
+        // 5) 상태 열
+        var statusCol = new DataGridTextColumn
+        {
+            Header = "상태",
+            Width = 130,
+            Binding = new WpfBinding("StatusDescription"),
+            CanUserSort = false,
+            ElementStyle = new Style(typeof(TextBlock))
+            {
+                Setters =
+                {
+                    new Setter(TextBlock.VerticalAlignmentProperty, VerticalAlignment.Center),
+                    new Setter(TextBlock.MarginProperty, new Thickness(4, 0, 4, 0))
+                }
+            }
+        };
+        _treeGrid.Columns.Add(statusCol);
+
+        // 표준 표 엔진 연결 (GridColumnSelection + GridCheckBehavior)
+        _ = new GridColumnSelection(_treeGrid, fullRows: true);
+
+        _gridCheckBehavior = new GridCheckBehavior(
+            _treeGrid,
+            cell => cell.Column == checkCol ? "all" : null,
+            cell => cell.Item is WorksetHierarchyNode node ? node.IsSelected : null,
             (val, cells) =>
             {
                 bool target = val == true;
-                foreach (var c in cells.Select(x => x.Item).OfType<CategoryWorksetItem>().Distinct())
+                foreach (var c in cells)
                 {
-                    c.IsSelected = target;
+                    if (c.Item is WorksetHierarchyNode n)
+                    {
+                        n.IsSelected = target;
+                    }
                 }
                 UpdateSummary();
             },
-            blockUnmappedChecks: true);
+            blockUnmappedChecks: false,
+            defaultCheckColumn: () => checkCol
+        );
 
-        // --- 스플리터 1 ---
-        var splitter1 = new GridSplitter
-        {
-            Width = 6,
-            HorizontalAlignment = HorizontalAlignment.Center,
-            VerticalAlignment = VerticalAlignment.Stretch,
-            Background = Brushes.Transparent
-        };
-        WpfGrid.SetColumn(splitter1, 1);
-        bodyGrid.Children.Add(splitter1);
+        WpfGrid.SetRow(_treeGrid, 1);
+        root.Children.Add(_treeGrid);
 
-        // --- 2열: 패밀리 패널 ---
-        var famPanel = new DockPanel();
-        _familyHeaderLabel = new TextBlock
-        {
-            Text = "📁 패밀리 목록",
-            FontWeight = FontWeights.Bold,
-            FontSize = 13,
-            Margin = new Thickness(0, 0, 0, 6)
-        };
-        DockPanel.SetDock(_familyHeaderLabel, Dock.Top);
-        famPanel.Children.Add(_familyHeaderLabel);
-
-        _familyGrid = CreateFamilyDataGrid();
-        famPanel.Children.Add(_familyGrid);
-        WpfGrid.SetColumn(famPanel, 2);
-        bodyGrid.Children.Add(famPanel);
-
-        // RoBIM 표준 표 입력 엔진 연결
-        new GridColumnSelection(_familyGrid, fullRows: true);
-        _famCheckBehavior = new GridCheckBehavior(
-            _familyGrid,
-            cell => cell.Column == _familyGrid.Columns[0] ? "check" : null,
-            cell => (cell.Item as FamilyWorksetItem)?.IsSelected,
-            (val, cells) =>
-            {
-                bool target = val == true;
-                foreach (var f in cells.Select(x => x.Item).OfType<FamilyWorksetItem>().Distinct())
-                {
-                    f.IsSelected = target;
-                }
-                UpdateSummary();
-            },
-            blockUnmappedChecks: true);
-
-        // --- 스플리터 2 ---
-        var splitter2 = new GridSplitter
-        {
-            Width = 6,
-            HorizontalAlignment = HorizontalAlignment.Center,
-            VerticalAlignment = VerticalAlignment.Stretch,
-            Background = Brushes.Transparent
-        };
-        WpfGrid.SetColumn(splitter2, 3);
-        bodyGrid.Children.Add(splitter2);
-
-        // --- 3열: 세부 타입 패널 ---
-        var typePanel = new DockPanel();
-        var typeHeaderStack = new StackPanel { Margin = new Thickness(0, 0, 0, 6) };
-        _typeHeaderLabel = new TextBlock
-        {
-            Text = "📄 세부 타입 목록",
-            FontWeight = FontWeights.Bold,
-            FontSize = 13
-        };
-        var typeHintLabel = new TextBlock
-        {
-            Text = "※ 특정 타입만 다른 작업세트로 변경하려면 아래에서 개별 지정하세요. (현재 작업세트 표시 및 Shift/Ctrl 선택)",
-            FontSize = 11,
-            Foreground = Brushes.Gray,
-            Margin = new Thickness(0, 2, 0, 0)
-        };
-        typeHeaderStack.Children.Add(_typeHeaderLabel);
-        typeHeaderStack.Children.Add(typeHintLabel);
-        DockPanel.SetDock(typeHeaderStack, Dock.Top);
-        typePanel.Children.Add(typeHeaderStack);
-
-        _typeGrid = CreateTypeDataGrid();
-        typePanel.Children.Add(_typeGrid);
-        WpfGrid.SetColumn(typePanel, 4);
-        bodyGrid.Children.Add(typePanel);
-
-        // RoBIM 표준 표 입력 엔진 연결
-        new GridColumnSelection(_typeGrid, fullRows: true);
-        _typeCheckBehavior = new GridCheckBehavior(
-            _typeGrid,
-            cell => cell.Column == _typeGrid.Columns[0] ? "check" : null,
-            cell => (cell.Item as TypeWorksetItem)?.IsSelected,
-            (val, cells) =>
-            {
-                bool target = val == true;
-                foreach (var t in cells.Select(x => x.Item).OfType<TypeWorksetItem>().Distinct())
-                {
-                    t.IsSelected = target;
-                }
-                UpdateSummary();
-            },
-            blockUnmappedChecks: true);
-
-        WpfGrid.SetRow(bodyGrid, 1);
-        root.Children.Add(bodyGrid);
-
-        // ----------------- Row 2: 푸터 요약 및 버튼들 -----------------
-        var footerGrid = new WpfGrid { Margin = new Thickness(0, 12, 0, 0) };
+        // ----------------- Row 2: 하단 요약 및 실행 버튼 바 -----------------
+        var footerGrid = new WpfGrid { Margin = new Thickness(0, 10, 0, 0) };
         footerGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         footerGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
 
         _summaryLabel = new TextBlock
         {
-            Text = "변경 사항 없음",
             VerticalAlignment = VerticalAlignment.Center,
-            FontWeight = FontWeights.SemiBold,
-            Foreground = Brushes.DarkSlateGray
+            FontWeight = FontWeights.SemiBold
         };
         WpfGrid.SetColumn(_summaryLabel, 0);
+        footerGrid.Children.Add(_summaryLabel);
 
-        var buttonsStack = new StackPanel
+        var buttonPanel = new StackPanel
         {
             Orientation = Orientation.Horizontal,
             HorizontalAlignment = HorizontalAlignment.Right
         };
 
-        var btnReset = new Button
-        {
-            Content = "변경 초기화",
-            Height = 28,
-            Padding = new Thickness(14, 2, 14, 2),
-            Margin = new Thickness(0, 0, 8, 0)
-        };
-        btnReset.Click += OnResetClick;
-
         _applyButton = new Button
         {
-            Content = "적용",
-            Height = 28,
-            Padding = new Thickness(20, 2, 20, 2),
-            FontWeight = FontWeights.Bold,
-            Margin = new Thickness(0, 0, 8, 0)
+            Content = "적용 및 닫기",
+            Width = 120,
+            Height = 32,
+            Margin = new Thickness(0, 0, 8, 0),
+            FontWeight = FontWeights.Bold
         };
-        _applyButton.Click += OnApplyClick;
+        _applyButton.Click += OnApplyClicked;
+        buttonPanel.Children.Add(_applyButton);
 
-        var btnClose = new Button
+        var closeButton = new Button
         {
             Content = "닫기",
-            Height = 28,
-            Padding = new Thickness(16, 2, 16, 2),
-            IsCancel = true
+            Width = 90,
+            Height = 32
         };
-        btnClose.Click += (_, _) => Close();
+        closeButton.Click += (s, e) => Close();
+        buttonPanel.Children.Add(closeButton);
 
-        buttonsStack.Children.Add(btnReset);
-        buttonsStack.Children.Add(_applyButton);
-        buttonsStack.Children.Add(btnClose);
-        WpfGrid.SetColumn(buttonsStack, 1);
+        WpfGrid.SetColumn(buttonPanel, 1);
+        footerGrid.Children.Add(buttonPanel);
 
-        footerGrid.Children.Add(_summaryLabel);
-        footerGrid.Children.Add(buttonsStack);
         WpfGrid.SetRow(footerGrid, 2);
         root.Children.Add(footerGrid);
 
         Content = root;
 
-        // 초기 필터 적용
-        ApplyFilter();
+        // 초기 화면 표시 및 요약 갱신
+        RefreshDisplayedNodes();
     }
 
-    private DataGrid CreateCategoryDataGrid()
+    private void OnToggleExpandClicked(object sender, RoutedEventArgs e)
     {
-        var grid = new DataGrid
+        if (sender is Button btn && btn.DataContext is WorksetHierarchyNode node)
         {
-            AutoGenerateColumns = false,
-            CanUserAddRows = false,
-            CanUserDeleteRows = false,
-            CanUserResizeRows = false,
-            IsReadOnly = false,
-            SelectionMode = DataGridSelectionMode.Extended,
-            SelectionUnit = DataGridSelectionUnit.FullRow,
-            ItemsSource = _filteredCategories,
-            GridLinesVisibility = DataGridGridLinesVisibility.Horizontal,
-            HeadersVisibility = DataGridHeadersVisibility.Column
-        };
-
-        grid.Columns.Add(new DataGridCheckBoxColumn
-        {
-            Header = "선택",
-            Binding = new WpfBinding("IsSelected") { Mode = BindingMode.TwoWay, UpdateSourceTrigger = UpdateSourceTrigger.PropertyChanged },
-            Width = new DataGridLength(45)
-        });
-
-        grid.Columns.Add(new DataGridTextColumn
-        {
-            Header = "카테고리",
-            Binding = new WpfBinding("CategoryName"),
-            IsReadOnly = true,
-            Width = new DataGridLength(1, DataGridLengthUnitType.Star)
-        });
-
-        grid.Columns.Add(new DataGridTextColumn
-        {
-            Header = "요소수",
-            Binding = new WpfBinding("TotalInstanceCount"),
-            IsReadOnly = true,
-            Width = new DataGridLength(50)
-        });
-
-        // 1단계: 카테고리 작업세트 드롭다운 (현재 상태가 기본 선택되어 보임!)
-        var comboTemplate = new DataTemplate();
-        var factory = new FrameworkElementFactory(typeof(ComboBox));
-        factory.SetBinding(ComboBox.ItemsSourceProperty, new WpfBinding("AvailableWorksets"));
-        factory.SetValue(ComboBox.DisplayMemberPathProperty, "Name");
-        factory.SetBinding(ComboBox.SelectedItemProperty, new WpfBinding("SelectedWorkset")
-        {
-            Mode = BindingMode.TwoWay,
-            UpdateSourceTrigger = UpdateSourceTrigger.PropertyChanged
-        });
-        factory.SetValue(FrameworkElement.HeightProperty, 24.0);
-        factory.AddHandler(ComboBox.SelectionChangedEvent, new SelectionChangedEventHandler((_, _) => UpdateSummary()));
-        comboTemplate.VisualTree = factory;
-
-        grid.Columns.Add(new DataGridTemplateColumn
-        {
-            Header = "카테고리 작업세트",
-            CellTemplate = comboTemplate,
-            Width = new DataGridLength(140)
-        });
-
-        grid.SelectionChanged += (_, _) =>
-        {
-            if (grid.SelectedItem is CategoryWorksetItem cat)
+            if (node.HasChildren)
             {
-                _familyHeaderLabel.Text = $"📁 패밀리 목록 - {cat.CategoryName} ({cat.FamilyCount}개 패밀리)";
-                _currentFamilies.Clear();
-                foreach (var f in cat.Families)
-                {
-                    _currentFamilies.Add(f);
-                }
-                if (_currentFamilies.Count > 0)
-                {
-                    _familyGrid.SelectedIndex = 0;
-                }
-                else
-                {
-                    _currentTypes.Clear();
-                    _typeHeaderLabel.Text = "📄 세부 타입 목록";
-                }
+                node.IsExpanded = !node.IsExpanded;
+                RefreshDisplayedNodes();
             }
-            else
-            {
-                _familyHeaderLabel.Text = "📁 패밀리 목록";
-                _currentFamilies.Clear();
-                _currentTypes.Clear();
-                _typeHeaderLabel.Text = "📄 세부 타입 목록";
-            }
-        };
-
-        return grid;
+        }
     }
 
-    private DataGrid CreateFamilyDataGrid()
+    private void SetAllExpanded(bool expanded)
     {
-        var grid = new DataGrid
+        void Recurse(WorksetHierarchyNode node)
         {
-            AutoGenerateColumns = false,
-            CanUserAddRows = false,
-            CanUserDeleteRows = false,
-            CanUserResizeRows = false,
-            IsReadOnly = false,
-            SelectionMode = DataGridSelectionMode.Extended,
-            SelectionUnit = DataGridSelectionUnit.FullRow,
-            ItemsSource = _currentFamilies,
-            GridLinesVisibility = DataGridGridLinesVisibility.Horizontal,
-            HeadersVisibility = DataGridHeadersVisibility.Column
-        };
-
-        grid.Columns.Add(new DataGridCheckBoxColumn
-        {
-            Header = "선택",
-            Binding = new WpfBinding("IsSelected") { Mode = BindingMode.TwoWay, UpdateSourceTrigger = UpdateSourceTrigger.PropertyChanged },
-            Width = new DataGridLength(45)
-        });
-
-        grid.Columns.Add(new DataGridTextColumn
-        {
-            Header = "패밀리 이름",
-            Binding = new WpfBinding("FamilyName"),
-            IsReadOnly = true,
-            Width = new DataGridLength(1, DataGridLengthUnitType.Star)
-        });
-
-        grid.Columns.Add(new DataGridTextColumn
-        {
-            Header = "타입수",
-            Binding = new WpfBinding("TypeCount"),
-            IsReadOnly = true,
-            Width = new DataGridLength(45)
-        });
-
-        grid.Columns.Add(new DataGridTextColumn
-        {
-            Header = "요소수",
-            Binding = new WpfBinding("TotalInstanceCount"),
-            IsReadOnly = true,
-            Width = new DataGridLength(50)
-        });
-
-        // 2단계: 패밀리 작업세트 드롭다운 (현재 상태가 기본 선택되어 보임!)
-        var comboTemplate = new DataTemplate();
-        var factory = new FrameworkElementFactory(typeof(ComboBox));
-        factory.SetBinding(ComboBox.ItemsSourceProperty, new WpfBinding("AvailableWorksets"));
-        factory.SetValue(ComboBox.DisplayMemberPathProperty, "Name");
-        factory.SetBinding(ComboBox.SelectedItemProperty, new WpfBinding("SelectedWorkset")
-        {
-            Mode = BindingMode.TwoWay,
-            UpdateSourceTrigger = UpdateSourceTrigger.PropertyChanged
-        });
-        factory.SetValue(FrameworkElement.HeightProperty, 24.0);
-        factory.AddHandler(ComboBox.SelectionChangedEvent, new SelectionChangedEventHandler((_, _) => UpdateSummary()));
-        comboTemplate.VisualTree = factory;
-
-        grid.Columns.Add(new DataGridTemplateColumn
-        {
-            Header = "패밀리 작업세트",
-            CellTemplate = comboTemplate,
-            Width = new DataGridLength(140)
-        });
-
-        grid.SelectionChanged += (_, _) =>
-        {
-            if (grid.SelectedItem is FamilyWorksetItem fam)
+            node.IsExpanded = expanded;
+            foreach (var child in node.Children)
             {
-                _typeHeaderLabel.Text = $"📄 세부 타입 목록 - {fam.FamilyName} ({fam.TypeCount}개 타입, {fam.TotalInstanceCount}개 배치됨)";
-                _currentTypes.Clear();
-                foreach (var t in fam.Types)
-                {
-                    _currentTypes.Add(t);
-                }
+                Recurse(child);
             }
-            else
-            {
-                _typeHeaderLabel.Text = "📄 세부 타입 목록";
-                _currentTypes.Clear();
-            }
-        };
-
-        return grid;
-    }
-
-    private DataGrid CreateTypeDataGrid()
-    {
-        var grid = new DataGrid
-        {
-            AutoGenerateColumns = false,
-            CanUserAddRows = false,
-            CanUserDeleteRows = false,
-            CanUserResizeRows = false,
-            IsReadOnly = false,
-            SelectionMode = DataGridSelectionMode.Extended,
-            SelectionUnit = DataGridSelectionUnit.FullRow,
-            ItemsSource = _currentTypes,
-            GridLinesVisibility = DataGridGridLinesVisibility.Horizontal,
-            HeadersVisibility = DataGridHeadersVisibility.Column
-        };
-
-        grid.Columns.Add(new DataGridCheckBoxColumn
-        {
-            Header = "선택",
-            Binding = new WpfBinding("IsSelected") { Mode = BindingMode.TwoWay, UpdateSourceTrigger = UpdateSourceTrigger.PropertyChanged },
-            Width = new DataGridLength(45)
-        });
-
-        grid.Columns.Add(new DataGridTextColumn
-        {
-            Header = "타입 이름",
-            Binding = new WpfBinding("TypeName"),
-            IsReadOnly = true,
-            Width = new DataGridLength(1, DataGridLengthUnitType.Star)
-        });
-
-        grid.Columns.Add(new DataGridTextColumn
-        {
-            Header = "요소수",
-            Binding = new WpfBinding("InstanceCount"),
-            IsReadOnly = true,
-            Width = new DataGridLength(50)
-        });
-
-        // 3단계: 타입별 작업세트 드롭다운 (현재 작업세트가 기본 선택되어 보임!)
-        var comboTemplate = new DataTemplate();
-        var factory = new FrameworkElementFactory(typeof(ComboBox));
-        factory.SetBinding(ComboBox.ItemsSourceProperty, new WpfBinding("AvailableWorksets"));
-        factory.SetValue(ComboBox.DisplayMemberPathProperty, "Name");
-        factory.SetBinding(ComboBox.SelectedItemProperty, new WpfBinding("SelectedWorkset")
-        {
-            Mode = BindingMode.TwoWay,
-            UpdateSourceTrigger = UpdateSourceTrigger.PropertyChanged
-        });
-        factory.SetValue(FrameworkElement.HeightProperty, 24.0);
-        factory.AddHandler(ComboBox.SelectionChangedEvent, new SelectionChangedEventHandler((_, _) => UpdateSummary()));
-        comboTemplate.VisualTree = factory;
-
-        grid.Columns.Add(new DataGridTemplateColumn
-        {
-            Header = "타입 작업세트",
-            CellTemplate = comboTemplate,
-            Width = new DataGridLength(140)
-        });
-
-        grid.Columns.Add(new DataGridTextColumn
-        {
-            Header = "상태",
-            Binding = new WpfBinding("StatusDescription"),
-            IsReadOnly = true,
-            Width = new DataGridLength(80)
-        });
-
-        return grid;
-    }
-
-    private void ApplyFilter()
-    {
-        string searchText = _searchBox?.Text?.Trim() ?? string.Empty;
-        bool onlyPlaced = _onlyPlacedCheckBox?.IsChecked ?? true;
-
-        var filtered = _allCategories.Where(c =>
-        {
-            if (onlyPlaced && c.TotalInstanceCount == 0)
-                return false;
-
-            if (!string.IsNullOrEmpty(searchText))
-            {
-                bool matchCat = c.CategoryName.IndexOf(searchText, StringComparison.OrdinalIgnoreCase) >= 0;
-                bool matchFam = c.Families.Any(f => f.FamilyName.IndexOf(searchText, StringComparison.OrdinalIgnoreCase) >= 0);
-                bool matchType = c.Families.Any(f => f.Types.Any(t => t.TypeName.IndexOf(searchText, StringComparison.OrdinalIgnoreCase) >= 0));
-                if (!matchCat && !matchFam && !matchType) return false;
-            }
-
-            return true;
-        }).ToList();
-
-        _filteredCategories.Clear();
-        foreach (var item in filtered)
-        {
-            _filteredCategories.Add(item);
         }
 
-        _categoryHeaderLabel.Text = $"🏷️ 카테고리 목록 ({_filteredCategories.Count}개)";
-
-        if (_filteredCategories.Count > 0)
+        foreach (var root in _allRoots)
         {
-            _categoryGrid.SelectedIndex = 0;
+            Recurse(root);
+        }
+
+        RefreshDisplayedNodes();
+    }
+
+    private void OnTreeGridSorting(object sender, DataGridSortingEventArgs e)
+    {
+        e.Handled = true;
+        var column = e.Column;
+        var property = column.SortMemberPath;
+        if (string.IsNullOrEmpty(property)) return;
+
+        var newDirection = column.SortDirection == ListSortDirection.Ascending
+            ? ListSortDirection.Descending
+            : ListSortDirection.Ascending;
+
+        column.SortDirection = newDirection;
+
+        foreach (var col in _treeGrid.Columns)
+        {
+            if (col != column) col.SortDirection = null;
+        }
+
+        _currentSortProperty = property;
+        _currentSortDirection = newDirection;
+
+        SortHierarchy(_currentSortProperty, _currentSortDirection);
+        RefreshDisplayedNodes();
+    }
+
+    private void SortHierarchy(string property, ListSortDirection direction)
+    {
+        void SortNodeChildren(WorksetHierarchyNode node)
+        {
+            if (!node.HasChildren) return;
+
+            if (property == "InstanceCount")
+            {
+                if (direction == ListSortDirection.Ascending)
+                    node.Children.Sort((a, b) => a.InstanceCount.CompareTo(b.InstanceCount));
+                else
+                    node.Children.Sort((a, b) => b.InstanceCount.CompareTo(a.InstanceCount));
+            }
+            else
+            {
+                if (direction == ListSortDirection.Ascending)
+                    node.Children.Sort((a, b) => string.Compare(a.Name, b.Name, StringComparison.CurrentCultureIgnoreCase));
+                else
+                    node.Children.Sort((a, b) => string.Compare(b.Name, a.Name, StringComparison.CurrentCultureIgnoreCase));
+            }
+
+            foreach (var child in node.Children)
+            {
+                SortNodeChildren(child);
+            }
+        }
+
+        if (property == "InstanceCount")
+        {
+            if (direction == ListSortDirection.Ascending)
+                _allRoots.Sort((a, b) => a.InstanceCount.CompareTo(b.InstanceCount));
+            else
+                _allRoots.Sort((a, b) => b.InstanceCount.CompareTo(a.InstanceCount));
         }
         else
         {
-            _currentFamilies.Clear();
-            _currentTypes.Clear();
-            _familyHeaderLabel.Text = "📁 패밀리 목록";
-            _typeHeaderLabel.Text = "📄 세부 타입 목록";
-        }
-
-        UpdateSummary();
-    }
-
-    private void OnBulkApplyClick(object sender, RoutedEventArgs e)
-    {
-        var selectedWs = _bulkWorksetCombo.SelectedItem as WorksetInfo;
-        if (selectedWs == null || selectedWs.IsSpecial) return;
-
-        int appliedCount = 0;
-
-        // 1. 체크박스로 선택된 항목들 처리
-        foreach (var cat in _allCategories)
-        {
-            if (cat.IsSelected)
-            {
-                cat.SelectedWorkset = selectedWs;
-                appliedCount++;
-            }
+            if (direction == ListSortDirection.Ascending)
+                _allRoots.Sort((a, b) => string.Compare(a.Name, b.Name, StringComparison.CurrentCultureIgnoreCase));
             else
-            {
-                foreach (var fam in cat.Families)
-                {
-                    if (fam.IsSelected)
-                    {
-                        fam.SelectedWorkset = selectedWs;
-                        appliedCount++;
-                    }
-                    else
-                    {
-                        foreach (var t in fam.Types)
-                        {
-                            if (t.IsSelected)
-                            {
-                                t.SelectedWorkset = selectedWs;
-                                appliedCount++;
-                            }
-                        }
-                    }
-                }
-            }
+                _allRoots.Sort((a, b) => string.Compare(b.Name, a.Name, StringComparison.CurrentCultureIgnoreCase));
         }
 
-        // 2. 체크박스 선택 외에 Shift/Ctrl로 파랗게 선택된 행들(SelectedItems)도 함께 적용
-        if (_categoryGrid.SelectedItems.Count > 0)
+        foreach (var root in _allRoots)
         {
-            foreach (var cat in _categoryGrid.SelectedItems.OfType<CategoryWorksetItem>())
-            {
-                cat.SelectedWorkset = selectedWs;
-                appliedCount++;
-            }
+            SortNodeChildren(root);
         }
-        if (_familyGrid.SelectedItems.Count > 0)
-        {
-            foreach (var fam in _familyGrid.SelectedItems.OfType<FamilyWorksetItem>())
-            {
-                fam.SelectedWorkset = selectedWs;
-                appliedCount++;
-            }
-        }
-        if (_typeGrid.SelectedItems.Count > 0)
-        {
-            foreach (var t in _typeGrid.SelectedItems.OfType<TypeWorksetItem>())
-            {
-                t.SelectedWorkset = selectedWs;
-                appliedCount++;
-            }
-        }
-
-        if (appliedCount == 0)
-        {
-            TaskDialog.Show("일괄 지정", "선택된 카테고리, 패밀리 또는 타입이 없습니다.\n목록 좌측의 [선택] 체크박스를 클릭하거나 Shift/Ctrl로 행을 다중 선택한 후 다시 시도해 주세요.");
-            return;
-        }
-
-        UpdateSummary();
     }
 
-    private void OnResetClick(object sender, RoutedEventArgs e)
+    private void RefreshDisplayedNodes()
     {
-        foreach (var cat in _allCategories)
+        _displayedNodes.Clear();
+        var filter = _searchBox?.Text?.Trim() ?? string.Empty;
+
+        bool MatchesFilter(WorksetHierarchyNode node)
         {
-            cat.SelectedWorkset = cat.InitialWorkset;
-            cat.IsSelected = false;
-            foreach (var fam in cat.Families)
+            if (string.IsNullOrEmpty(filter)) return true;
+            if (node.Name.IndexOf(filter, StringComparison.CurrentCultureIgnoreCase) >= 0) return true;
+            return node.Children.Any(MatchesFilter);
+        }
+
+        void AddVisibleNodes(WorksetHierarchyNode node, bool isFiltered)
+        {
+            if (isFiltered && !MatchesFilter(node)) return;
+
+            _displayedNodes.Add(node);
+
+            // 검색 중이면 일치하는 자식이 있는 경우 자동 펼침 처리
+            bool expand = node.IsExpanded || (isFiltered && !string.IsNullOrEmpty(filter));
+            if (expand)
             {
-                fam.SelectedWorkset = fam.InitialWorkset;
-                fam.IsSelected = false;
-                foreach (var t in fam.Types)
+                foreach (var child in node.Children)
                 {
-                    t.SelectedWorkset = t.InitialWorkset;
-                    t.IsSelected = false;
+                    AddVisibleNodes(child, isFiltered);
                 }
             }
         }
+
+        bool isFiltering = !string.IsNullOrEmpty(filter);
+        foreach (var root in _allRoots)
+        {
+            AddVisibleNodes(root, isFiltering);
+        }
+
         UpdateSummary();
     }
 
     private void UpdateSummary()
     {
-        int modifiedCatCount = _allCategories.Count(c => c.Families.Any(f => f.Types.Any(t => t.IsModified)));
-        int modifiedFamCount = _allCategories.Sum(c => c.Families.Count(f => f.Types.Any(t => t.IsModified)));
-        int modifiedTypeCount = _allCategories.Sum(c => c.ModifiedTypeCount);
-        int modifiedInstCount = _allCategories.Sum(c => c.ModifiedInstanceCount);
+        var allTypes = GetAllTypeNodes(_allRoots).ToList();
+        int totalTypes = allTypes.Count;
+        int totalInstances = allTypes.Sum(t => t.InstanceCount);
 
-        if (modifiedInstCount == 0 && modifiedTypeCount == 0)
-        {
-            _summaryLabel.Text = "변경 사항 없음";
-            _summaryLabel.Foreground = Brushes.Gray;
-            _applyButton.Content = "적용";
-            _applyButton.IsEnabled = false;
-        }
-        else
-        {
-            _summaryLabel.Text = $"⚡ 총 {modifiedCatCount}개 카테고리 · {modifiedFamCount}개 패밀리 · {modifiedTypeCount}개 타입 · {modifiedInstCount}개 요소 변경 예정";
-            _summaryLabel.Foreground = new SolidColorBrush(MediaColor.FromRgb(0, 102, 204));
-            _applyButton.Content = $"적용 ({modifiedInstCount}개 요소)";
-            _applyButton.IsEnabled = true;
-        }
+        var modifiedTypes = allTypes.Where(t => t.IsModified).ToList();
+        int modTypeCount = modifiedTypes.Count;
+        int modInstanceCount = modifiedTypes.Sum(t => t.InstanceCount);
+
+        _summaryLabel.Text = $"카테고리: {_allRoots.Count}개 | 전체: {totalTypes}개 타입 ({totalInstances:N0}개 요소) | 변경 예정: {modTypeCount}개 타입 ({modInstanceCount:N0}개 요소)";
     }
 
-    private void OnApplyClick(object sender, RoutedEventArgs e)
+    private void OnBulkApplyClicked(object sender, RoutedEventArgs e)
     {
-        var modifiedTypes = _allCategories
-            .SelectMany(c => c.Families)
-            .SelectMany(f => f.Types)
-            .Where(t => t.IsModified && t.SelectedWorkset != null && !t.SelectedWorkset.IsSpecial)
-            .ToList();
-
-        if (modifiedTypes.Count == 0)
+        if (_bulkWorksetCombo.SelectedItem is not WorksetInfo targetWorkset)
         {
-            TaskDialog.Show("작업 세트 관리", "변경할 작업 세트가 지정되지 않았습니다.");
+            TaskDialog.Show("작업 세트 관리", "일괄 적용할 작업 세트를 선택해주세요.");
             return;
         }
 
-        int totalInstCount = modifiedTypes.Sum(t => t.InstanceCount);
+        // 체크된 노드들 수집
+        var selectedNodes = GetAllNodes(_allRoots).Where(n => n.IsSelected).ToList();
+        if (selectedNodes.Count == 0)
+        {
+            TaskDialog.Show("작업 세트 관리", "체크박스로 선택된 항목이 없습니다. 표에서 원하는 행을 체크해주세요.");
+            return;
+        }
 
-        var confirm = TaskDialog.Show(
-            "작업 세트 일괄 변경 확인",
-            $"총 {modifiedTypes.Count}개 타입, {totalInstCount}개 요소의 작업 세트를 변경하시겠습니까?\n\n" +
-            "※ 수정 중 특정 요소가 잠겨있거나 수정 불가하더라도 가능한 요소는 안전하게 모두 수정됩니다.\n" +
-            "※ 이 작업은 단일 Undo(실행 취소)로 언제든지 되돌릴 수 있습니다.",
-            TaskDialogCommonButtons.Ok | TaskDialogCommonButtons.Cancel);
+        foreach (var node in selectedNodes)
+        {
+            node.SelectedWorkset = targetWorkset;
+        }
 
-        if (confirm != TaskDialogResult.Ok) return;
+        UpdateSummary();
+    }
 
-        int updatedElementCount = 0;
-        int updatedTypeCount = 0;
+    private void OnApplyClicked(object sender, RoutedEventArgs e)
+    {
+        var modifiedTypes = GetAllTypeNodes(_allRoots).Where(t => t.IsModified).ToList();
+        if (modifiedTypes.Count == 0)
+        {
+            TaskDialog.Show("작업 세트 관리", "변경된 작업 세트 항목이 없습니다.");
+            return;
+        }
+
+        int modTypeCount = modifiedTypes.Count;
+        int modInstCount = modifiedTypes.Sum(t => t.InstanceCount);
+
+        var confirmDialog = new TaskDialog("작업 세트 일괄 변경 확인")
+        {
+            MainInstruction = $"{modTypeCount}개 타입, 총 {modInstCount:N0}개 요소의 작업 세트를 변경하시겠습니까?",
+            MainContent = "적용 후 단 1회의 실행 취소(Ctrl+Z)로 언제든지 모든 변경 사항을 되돌릴 수 있습니다.\n\n수정이 잠겨있거나 권한이 없는 요소는 안전하게 건너뛰며 정상 처리됩니다.",
+            CommonButtons = TaskDialogCommonButtons.Yes | TaskDialogCommonButtons.No,
+            DefaultButton = TaskDialogResult.Yes
+        };
+
+        if (confirmDialog.Show() != TaskDialogResult.Yes)
+        {
+            return;
+        }
+
+        // 단 1개의 Transaction으로 오류 관용적 일괄 처리 수행
+        int successCount = 0;
         int skippedCount = 0;
 
         using (var trans = new Transaction(_doc, "타입별 작업 세트 일괄 변경"))
         {
             trans.Start();
 
-            foreach (var typeItem in modifiedTypes)
+            foreach (var typeNode in modifiedTypes)
             {
-                int targetWsId = typeItem.SelectedWorkset.Id;
-                bool anyUpdated = false;
+                var targetWsId = typeNode.SelectedWorkset.RevitWorksetId;
 
-                // 1. 배치된 모든 인스턴스(그룹 인스턴스 포함) 수정 시도
-                foreach (var instId in typeItem.InstanceIds)
+                // 1) 타입 자체의 작업세트 파라미터 변경 시도 (패밀리 심볼)
+                if (typeNode.ElementTypeId != null && typeNode.ElementTypeId != ElementId.InvalidElementId)
                 {
-                    try
+                    var elemType = _doc.GetElement(typeNode.ElementTypeId);
+                    if (elemType != null)
                     {
-                        var elem = _doc.GetElement(instId);
-                        if (elem == null)
+                        var param = elemType.get_Parameter(BuiltInParameter.ELEM_PARTITION_PARAM);
+                        if (param != null && !param.IsReadOnly)
                         {
-                            skippedCount++;
-                            continue;
-                        }
-
-                        // Pinned 상태 체크: 고정된 요소는 수정 불가할 수 있음
-                        if (elem.Pinned)
-                        {
-                            skippedCount++;
-                            continue;
-                        }
-
-                        var param = elem.get_Parameter(BuiltInParameter.ELEM_PARTITION_PARAM);
-                        if (param == null || param.IsReadOnly)
-                        {
-                            skippedCount++;
-                            continue;
-                        }
-
-                        if (param.AsInteger() != targetWsId)
-                        {
-                            param.Set(targetWsId);
-                            updatedElementCount++;
-                            anyUpdated = true;
+                            try { param.Set(targetWsId.IntegerValue); } catch { }
                         }
                     }
-                    catch
+                }
+
+                // 2) 실제 인스턴스들의 작업세트 파라미터 변경 (오류 관용적 처리)
+                foreach (var instId in typeNode.InstanceIds)
+                {
+                    var elem = _doc.GetElement(instId);
+                    if (elem == null) continue;
+
+                    if (elem.Pinned)
                     {
-                        // 그룹 종속 또는 권한 제한 등으로 실패 시 건너뛰고 계속 진행
+                        skippedCount++;
+                        continue;
+                    }
+
+                    var param = elem.get_Parameter(BuiltInParameter.ELEM_PARTITION_PARAM);
+                    if (param != null && !param.IsReadOnly)
+                    {
+                        try
+                        {
+                            param.Set(targetWsId.IntegerValue);
+                            successCount++;
+                        }
+                        catch
+                        {
+                            skippedCount++;
+                        }
+                    }
+                    else
+                    {
                         skippedCount++;
                     }
                 }
-
-                // 2. 타입 심볼 자체도 수정 가능한 경우 안전하게 수정 시도
-                try
-                {
-                    var typeElem = _doc.GetElement(typeItem.TypeId);
-                    if (typeElem != null)
-                    {
-                        var typeParam = typeElem.get_Parameter(BuiltInParameter.ELEM_PARTITION_PARAM);
-                        if (typeParam != null && !typeParam.IsReadOnly && typeParam.AsInteger() != targetWsId)
-                        {
-                            typeParam.Set(targetWsId);
-                            anyUpdated = true;
-                        }
-                    }
-                }
-                catch
-                {
-                    // 타입 수정 실패 시 skip
-                }
-
-                if (anyUpdated) updatedTypeCount++;
             }
 
             trans.Commit();
         }
 
-        string resultMessage = $"총 {updatedElementCount}개 요소 ({updatedTypeCount}개 타입)의 작업 세트가 성공적으로 변경되었습니다.";
-        if (skippedCount > 0)
+        var resultDialog = new TaskDialog("작업 세트 변경 완료")
         {
-            resultMessage += $"\n\n※ {skippedCount}개 요소는 잠김(Pinned) 또는 편집 권한 제한(그룹 종속 등)으로 인해 건너뛰었습니다.";
-        }
-
-        TaskDialog.Show("작업 세트 변경 완료", resultMessage);
+            MainInstruction = $"작업 세트 변경이 완료되었습니다.",
+            MainContent = $"- 정상 변경 완료: {successCount:N0}개 요소\n- 건너뜀 (잠김/읽기전용): {skippedCount:N0}개 요소\n\nRevit에서 언제든지 Ctrl+Z를 누르면 1회로 모두 취소됩니다."
+        };
+        resultDialog.Show();
 
         DialogResult = true;
         Close();
+    }
+
+    private static IEnumerable<WorksetHierarchyNode> GetAllNodes(IEnumerable<WorksetHierarchyNode> roots)
+    {
+        foreach (var root in roots)
+        {
+            yield return root;
+            foreach (var child in GetAllNodes(root.Children))
+            {
+                yield return child;
+            }
+        }
+    }
+
+    private static IEnumerable<WorksetHierarchyNode> GetAllTypeNodes(IEnumerable<WorksetHierarchyNode> roots)
+    {
+        foreach (var node in GetAllNodes(roots))
+        {
+            if (node.NodeType == HierarchyNodeType.Type)
+            {
+                yield return node;
+            }
+        }
     }
 }

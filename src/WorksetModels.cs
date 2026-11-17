@@ -4,9 +4,17 @@ using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Linq;
 using System.Runtime.CompilerServices;
+using System.Windows;
 using Autodesk.Revit.DB;
 
 namespace RoBIM.Feature;
+
+public enum HierarchyNodeType
+{
+    Category,
+    Family,
+    Type
+}
 
 public sealed class WorksetInfo : IEquatable<WorksetInfo>
 {
@@ -39,19 +47,62 @@ public sealed class WorksetInfo : IEquatable<WorksetInfo>
     public override int GetHashCode() => Id.GetHashCode();
 }
 
-public sealed class TypeWorksetItem : INotifyPropertyChanged
+public sealed class WorksetHierarchyNode : INotifyPropertyChanged
 {
     private bool _isSelected;
+    private bool _isExpanded;
     private WorksetInfo _selectedWorkset;
 
-    public ElementId TypeId { get; }
-    public string TypeName { get; }
-    public FamilyWorksetItem Parent { get; }
-    public List<ElementId> InstanceIds { get; }
-    public int InstanceCount => InstanceIds.Count;
-    public WorksetInfo InitialWorkset { get; }
-    public ObservableCollection<WorksetInfo> AvailableWorksets { get; }
-    public bool IsGroup => Parent.IsGroup;
+    public HierarchyNodeType NodeType { get; }
+    public string Name { get; }
+    public int Level { get; }
+    public Thickness IndentMargin => new Thickness(Level * 16, 0, 0, 0);
+
+    public WorksetHierarchyNode? Parent { get; }
+    public List<WorksetHierarchyNode> Children { get; } = new();
+    public bool HasChildren => Children.Count > 0;
+
+    public List<ElementId> InstanceIds { get; } = new();
+    public ElementId? ElementTypeId { get; set; }
+    public bool IsGroup { get; }
+
+    public int InstanceCount => NodeType == HierarchyNodeType.Type
+        ? InstanceIds.Count
+        : Children.Sum(c => c.InstanceCount);
+
+    public WorksetInfo InitialWorkset { get; set; }
+    public ObservableCollection<WorksetInfo> AvailableWorksets { get; } = new();
+
+    public string IconSymbol => NodeType switch
+    {
+        HierarchyNodeType.Category => "🏷️",
+        HierarchyNodeType.Family => IsGroup ? "📦" : "📁",
+        HierarchyNodeType.Type => "📄",
+        _ => "▪"
+    };
+
+    public string ExpandSymbol
+    {
+        get
+        {
+            if (!HasChildren) return "   ";
+            return IsExpanded ? "▼ " : "▶ ";
+        }
+    }
+
+    public bool IsExpanded
+    {
+        get => _isExpanded;
+        set
+        {
+            if (_isExpanded != value)
+            {
+                _isExpanded = value;
+                OnPropertyChanged();
+                OnPropertyChanged(nameof(ExpandSymbol));
+            }
+        }
+    }
 
     public bool IsSelected
     {
@@ -62,6 +113,11 @@ public sealed class TypeWorksetItem : INotifyPropertyChanged
             {
                 _isSelected = value;
                 OnPropertyChanged();
+                // 상위 체크 시 하위 모든 자식 노드 자동 동기화
+                foreach (var child in Children)
+                {
+                    child.IsSelected = value;
+                }
             }
         }
     }
@@ -77,147 +133,58 @@ public sealed class TypeWorksetItem : INotifyPropertyChanged
                 OnPropertyChanged();
                 OnPropertyChanged(nameof(IsModified));
                 OnPropertyChanged(nameof(StatusDescription));
-                Parent.NotifyChildModified();
+
+                // 상위(카테고리/패밀리)에서 작업세트 변경 시 하위 모든 자식 노드 자동 연동
+                if (value != null && !value.IsSpecial)
+                {
+                    foreach (var child in Children)
+                    {
+                        child.SelectedWorkset = value;
+                    }
+                }
+                NotifyModified();
             }
         }
     }
 
-    public bool IsModified => SelectedWorkset != null && !SelectedWorkset.IsSpecial && !Equals(SelectedWorkset, InitialWorkset);
+    public bool IsModified => NodeType == HierarchyNodeType.Type
+        ? (SelectedWorkset != null && !SelectedWorkset.IsSpecial && !Equals(SelectedWorkset, InitialWorkset))
+        : Children.Any(c => c.IsModified);
 
     public string StatusDescription
     {
         get
         {
+            if (NodeType != HierarchyNodeType.Type)
+            {
+                int modCount = GetModifiedTypeCount();
+                return modCount > 0 ? $"{modCount}개 변경예정" : "유지";
+            }
+
             if (SelectedWorkset == null || Equals(SelectedWorkset, InitialWorkset)) return "동일";
             return $"-> {SelectedWorkset.Name}";
         }
     }
 
-    public TypeWorksetItem(
-        ElementId typeId,
-        string typeName,
-        FamilyWorksetItem parent,
-        List<ElementId> instanceIds,
-        WorksetInfo initialWorkset,
-        IReadOnlyList<WorksetInfo> standardWorksets)
+    public WorksetHierarchyNode(
+        HierarchyNodeType nodeType,
+        string name,
+        int level,
+        WorksetHierarchyNode? parent,
+        bool isGroup = false)
     {
-        TypeId = typeId;
-        TypeName = typeName;
+        NodeType = nodeType;
+        Name = name;
+        Level = level;
         Parent = parent;
-        InstanceIds = instanceIds;
-        InitialWorkset = initialWorkset;
-        _selectedWorkset = initialWorkset;
-
-        AvailableWorksets = new ObservableCollection<WorksetInfo>();
-        if (initialWorkset.IsSpecial)
-        {
-            AvailableWorksets.Add(initialWorkset);
-        }
-        foreach (var ws in standardWorksets)
-        {
-            AvailableWorksets.Add(ws);
-        }
-    }
-
-    public event PropertyChangedEventHandler? PropertyChanged;
-    private void OnPropertyChanged([CallerMemberName] string? propertyName = null)
-    {
-        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
-    }
-}
-
-public sealed class FamilyWorksetItem : INotifyPropertyChanged
-{
-    private bool _isSelected;
-    private WorksetInfo _selectedWorkset;
-
-    public CategoryWorksetItem ParentCategory { get; }
-    public string CategoryName => ParentCategory.CategoryName;
-    public string FamilyName { get; }
-    public bool IsGroup { get; }
-    public ObservableCollection<TypeWorksetItem> Types { get; }
-    public int TotalInstanceCount => Types.Sum(t => t.InstanceCount);
-    public int TypeCount => Types.Count;
-    public WorksetInfo InitialWorkset { get; private set; }
-    public ObservableCollection<WorksetInfo> AvailableWorksets { get; private set; }
-
-    public bool IsSelected
-    {
-        get => _isSelected;
-        set
-        {
-            if (_isSelected != value)
-            {
-                _isSelected = value;
-                OnPropertyChanged();
-                foreach (var t in Types)
-                {
-                    t.IsSelected = value;
-                }
-            }
-        }
-    }
-
-    public WorksetInfo SelectedWorkset
-    {
-        get => _selectedWorkset;
-        set
-        {
-            if (!Equals(_selectedWorkset, value))
-            {
-                _selectedWorkset = value;
-                OnPropertyChanged();
-                OnPropertyChanged(nameof(IsModified));
-                // 패밀리 레벨 변경 시 하위 모든 Type의 작업세트 자동 연동
-                if (value != null && !value.IsSpecial)
-                {
-                    foreach (var t in Types)
-                    {
-                        t.SelectedWorkset = value;
-                    }
-                }
-                NotifyChildModified();
-            }
-        }
-    }
-
-    public bool IsModified => SelectedWorkset != null && !SelectedWorkset.IsSpecial && !Equals(SelectedWorkset, InitialWorkset);
-    public int ModifiedInstanceCount => Types.Where(t => t.IsModified).Sum(t => t.InstanceCount);
-    public int ModifiedTypeCount => Types.Count(t => t.IsModified);
-
-    public FamilyWorksetItem(CategoryWorksetItem parentCategory, string familyName, bool isGroup = false)
-    {
-        ParentCategory = parentCategory;
-        FamilyName = familyName;
         IsGroup = isGroup;
-        Types = new ObservableCollection<TypeWorksetItem>();
+        _isExpanded = true; // 기본적으로 펼침 상태
         InitialWorkset = WorksetInfo.Unplaced;
         _selectedWorkset = WorksetInfo.Unplaced;
-        AvailableWorksets = new ObservableCollection<WorksetInfo>();
     }
 
-    public void CalculateInitialWorkset(IReadOnlyList<WorksetInfo> standardWorksets)
+    public void SetupAvailableWorksets(IReadOnlyList<WorksetInfo> standardWorksets)
     {
-        if (Types.Count == 0 || TotalInstanceCount == 0)
-        {
-            InitialWorkset = WorksetInfo.Unplaced;
-        }
-        else
-        {
-            var distinct = Types
-                .Where(t => t.InstanceCount > 0)
-                .Select(t => t.InitialWorkset)
-                .Distinct()
-                .ToList();
-
-            if (distinct.Count == 1 && !distinct[0].IsSpecial)
-                InitialWorkset = distinct[0];
-            else
-                InitialWorkset = WorksetInfo.Mixed;
-        }
-
-        _selectedWorkset = InitialWorkset;
-
         AvailableWorksets.Clear();
         if (InitialWorkset.IsSpecial)
         {
@@ -229,131 +196,23 @@ public sealed class FamilyWorksetItem : INotifyPropertyChanged
         }
     }
 
-    public void NotifyChildModified()
+    public int GetModifiedTypeCount()
     {
-        OnPropertyChanged(nameof(ModifiedInstanceCount));
-        OnPropertyChanged(nameof(ModifiedTypeCount));
-        ParentCategory.NotifyChildModified();
+        if (NodeType == HierarchyNodeType.Type) return IsModified ? 1 : 0;
+        return Children.Sum(c => c.GetModifiedTypeCount());
     }
 
-    public event PropertyChangedEventHandler? PropertyChanged;
-    private void OnPropertyChanged([CallerMemberName] string? propertyName = null)
+    public int GetModifiedInstanceCount()
     {
-        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
-    }
-}
-
-public sealed class CategoryWorksetItem : INotifyPropertyChanged
-{
-    private bool _isSelected;
-    private WorksetInfo _selectedWorkset;
-
-    public string CategoryName { get; }
-    public bool IsGroup { get; }
-    public ObservableCollection<FamilyWorksetItem> Families { get; }
-    public int TotalInstanceCount => Families.Sum(f => f.TotalInstanceCount);
-    public int FamilyCount => Families.Count;
-    public int TypeCount => Families.Sum(f => f.TypeCount);
-    public WorksetInfo InitialWorkset { get; private set; }
-    public ObservableCollection<WorksetInfo> AvailableWorksets { get; private set; }
-
-    public bool IsSelected
-    {
-        get => _isSelected;
-        set
-        {
-            if (_isSelected != value)
-            {
-                _isSelected = value;
-                OnPropertyChanged();
-                foreach (var f in Families)
-                {
-                    f.IsSelected = value;
-                }
-            }
-        }
+        if (NodeType == HierarchyNodeType.Type) return IsModified ? InstanceCount : 0;
+        return Children.Sum(c => c.GetModifiedInstanceCount());
     }
 
-    public WorksetInfo SelectedWorkset
+    public void NotifyModified()
     {
-        get => _selectedWorkset;
-        set
-        {
-            if (!Equals(_selectedWorkset, value))
-            {
-                _selectedWorkset = value;
-                OnPropertyChanged();
-                OnPropertyChanged(nameof(IsModified));
-                // 카테고리 레벨 변경 시 하위 모든 패밀리와 타입의 작업세트 자동 연동
-                if (value != null && !value.IsSpecial)
-                {
-                    foreach (var f in Families)
-                    {
-                        f.SelectedWorkset = value;
-                    }
-                }
-                NotifyChildModified();
-            }
-        }
-    }
-
-    public bool IsModified => SelectedWorkset != null && !SelectedWorkset.IsSpecial && !Equals(SelectedWorkset, InitialWorkset);
-    public int ModifiedInstanceCount => Families.Sum(f => f.ModifiedInstanceCount);
-    public int ModifiedTypeCount => Families.Sum(f => f.ModifiedTypeCount);
-
-    public CategoryWorksetItem(string categoryName, bool isGroup = false)
-    {
-        CategoryName = categoryName;
-        IsGroup = isGroup;
-        Families = new ObservableCollection<FamilyWorksetItem>();
-        InitialWorkset = WorksetInfo.Unplaced;
-        _selectedWorkset = WorksetInfo.Unplaced;
-        AvailableWorksets = new ObservableCollection<WorksetInfo>();
-    }
-
-    public void CalculateInitialWorkset(IReadOnlyList<WorksetInfo> standardWorksets)
-    {
-        foreach (var f in Families)
-        {
-            f.CalculateInitialWorkset(standardWorksets);
-        }
-
-        if (Families.Count == 0 || TotalInstanceCount == 0)
-        {
-            InitialWorkset = WorksetInfo.Unplaced;
-        }
-        else
-        {
-            var distinct = Families
-                .SelectMany(f => f.Types)
-                .Where(t => t.InstanceCount > 0)
-                .Select(t => t.InitialWorkset)
-                .Distinct()
-                .ToList();
-
-            if (distinct.Count == 1 && !distinct[0].IsSpecial)
-                InitialWorkset = distinct[0];
-            else
-                InitialWorkset = WorksetInfo.Mixed;
-        }
-
-        _selectedWorkset = InitialWorkset;
-
-        AvailableWorksets.Clear();
-        if (InitialWorkset.IsSpecial)
-        {
-            AvailableWorksets.Add(InitialWorkset);
-        }
-        foreach (var ws in standardWorksets)
-        {
-            AvailableWorksets.Add(ws);
-        }
-    }
-
-    public void NotifyChildModified()
-    {
-        OnPropertyChanged(nameof(ModifiedInstanceCount));
-        OnPropertyChanged(nameof(ModifiedTypeCount));
+        OnPropertyChanged(nameof(IsModified));
+        OnPropertyChanged(nameof(StatusDescription));
+        Parent?.NotifyModified();
     }
 
     public event PropertyChangedEventHandler? PropertyChanged;
