@@ -7,11 +7,12 @@
     {
       "id": "run",
       "title": "타입별 작업 세트 관리",
-      "description": "타입별 작업 세트 관리",
+      "description": "패밀리 및 개별 타입 단위로 작업 세트(Workset)를 조회하고 일괄 지정·수정합니다. 패밀리 일괄 변경 및 개별 오버라이드, 단일 Undo를 지원합니다.",
       "tab": "RoBIM",
       "panel": "도구",
       "assembly": "Contents/2026/RoBIM.Feature.WorksetManager.dll",
-      "type": "RoBIM.Feature.Command"
+      "type": "RoBIM.Feature.Command",
+      "icon": "icon.png"
     }
   ]
 }
