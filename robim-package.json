@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "packages": [
+    {
+      "id": "robim-workset-manager",
+      "name": "타입별 작업 세트 관리",
+      "host": "revit",
+      "path": "RoBIM.Feature.WorksetManager.bundle",
+      "folder": "RoBIM.Feature.WorksetManager.bundle",
+      "distribution": "release",
+      "asset": "RoBIM.Feature.WorksetManager-Revit2026.zip",
+      "description": "타입별 작업 세트 관리",
+      "channel": "test",
+      "moduleId": "workset-manager",
+      "commandId": "run"
+    }
+  ]
+}
