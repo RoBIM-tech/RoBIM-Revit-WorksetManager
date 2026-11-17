@@ -46,6 +46,7 @@ public sealed class TypeWorksetItem : INotifyPropertyChanged
     public List<ElementId> InstanceIds { get; }
     public int InstanceCount => InstanceIds.Count;
     public string CurrentWorksetName { get; }
+    public bool IsGroup => Parent.IsGroup;
 
     public bool IsSelected
     {
@@ -114,8 +115,10 @@ public sealed class FamilyWorksetItem : INotifyPropertyChanged
     private bool _isSelected;
     private WorksetInfo? _targetWorkset;
 
-    public string CategoryName { get; }
+    public CategoryWorksetItem ParentCategory { get; }
+    public string CategoryName => ParentCategory.CategoryName;
     public string FamilyName { get; }
+    public bool IsGroup { get; }
     public ObservableCollection<TypeWorksetItem> Types { get; }
     public int TotalInstanceCount => Types.Sum(t => t.InstanceCount);
     public int TypeCount => Types.Count;
@@ -165,7 +168,6 @@ public sealed class FamilyWorksetItem : INotifyPropertyChanged
                 OnPropertyChanged();
                 if (value != null)
                 {
-                    // 패밀리 레벨에서 작업세트를 변경하면 하위 모든 Type의 대상 작업세트를 자동 동기화
                     foreach (var t in Types)
                     {
                         t.TargetWorkset = value;
@@ -179,11 +181,104 @@ public sealed class FamilyWorksetItem : INotifyPropertyChanged
     public int ModifiedInstanceCount => Types.Where(t => t.IsModified).Sum(t => t.InstanceCount);
     public int ModifiedTypeCount => Types.Count(t => t.IsModified);
 
-    public FamilyWorksetItem(string categoryName, string familyName)
+    public FamilyWorksetItem(CategoryWorksetItem parentCategory, string familyName, bool isGroup = false)
+    {
+        ParentCategory = parentCategory;
+        FamilyName = familyName;
+        IsGroup = isGroup;
+        Types = new ObservableCollection<TypeWorksetItem>();
+    }
+
+    public void NotifyChildModified()
+    {
+        OnPropertyChanged(nameof(ModifiedInstanceCount));
+        OnPropertyChanged(nameof(ModifiedTypeCount));
+        ParentCategory.NotifyChildModified();
+    }
+
+    public event PropertyChangedEventHandler? PropertyChanged;
+    private void OnPropertyChanged([CallerMemberName] string? propertyName = null)
+    {
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
+    }
+}
+
+public sealed class CategoryWorksetItem : INotifyPropertyChanged
+{
+    private bool _isSelected;
+    private WorksetInfo? _targetWorkset;
+
+    public string CategoryName { get; }
+    public bool IsGroup { get; }
+    public ObservableCollection<FamilyWorksetItem> Families { get; }
+    public int TotalInstanceCount => Families.Sum(f => f.TotalInstanceCount);
+    public int FamilyCount => Families.Count;
+    public int TypeCount => Families.Sum(f => f.TypeCount);
+
+    public string CurrentWorksetNameSummary
+    {
+        get
+        {
+            if (Families.Count == 0 || TotalInstanceCount == 0) return "(미배치)";
+            var distinct = Families
+                .SelectMany(f => f.Types)
+                .Where(t => t.InstanceCount > 0)
+                .Select(t => t.CurrentWorksetName)
+                .Distinct()
+                .ToList();
+
+            if (distinct.Count == 1 && distinct[0] != "(혼합)")
+                return distinct[0];
+            return "(혼합)";
+        }
+    }
+
+    public bool IsSelected
+    {
+        get => _isSelected;
+        set
+        {
+            if (_isSelected != value)
+            {
+                _isSelected = value;
+                OnPropertyChanged();
+                foreach (var f in Families)
+                {
+                    f.IsSelected = value;
+                }
+            }
+        }
+    }
+
+    public WorksetInfo? TargetWorkset
+    {
+        get => _targetWorkset;
+        set
+        {
+            if (!Equals(_targetWorkset, value))
+            {
+                _targetWorkset = value;
+                OnPropertyChanged();
+                if (value != null)
+                {
+                    foreach (var f in Families)
+                    {
+                        f.TargetWorkset = value;
+                    }
+                }
+                NotifyChildModified();
+            }
+        }
+    }
+
+    public int ModifiedInstanceCount => Families.Sum(f => f.ModifiedInstanceCount);
+    public int ModifiedTypeCount => Families.Sum(f => f.ModifiedTypeCount);
+
+    public CategoryWorksetItem(string categoryName, bool isGroup = false)
     {
         CategoryName = categoryName;
-        FamilyName = familyName;
-        Types = new ObservableCollection<TypeWorksetItem>();
+        IsGroup = isGroup;
+        Families = new ObservableCollection<FamilyWorksetItem>();
     }
 
     public void NotifyChildModified()

@@ -1,13 +1,13 @@
 {
   "schemaVersion": 1,
   "id": "workset-manager",
-  "version": "0.1.0-test.1",
+  "version": "0.1.0-test.2",
   "reloadPolicy": "command-only",
   "commands": [
     {
       "id": "run",
       "title": "타입별 작업 세트 관리",
-      "description": "패밀리 및 개별 타입 단위로 작업 세트(Workset)를 조회하고 일괄 지정·수정합니다. 패밀리 일괄 변경 및 개별 오버라이드, 단일 Undo를 지원합니다.",
+      "description": "카테고리·패밀리·타입 및 모델 그룹 단위로 작업 세트(Workset)를 조회하고 일괄 지정·수정합니다. 3단 캐스케이드 연동, 개별 오버라이드, 단일 Undo를 지원합니다.",
       "tab": "RoBIM",
       "panel": "도구",
       "assembly": "Contents/2026/RoBIM.Feature.WorksetManager.dll",
