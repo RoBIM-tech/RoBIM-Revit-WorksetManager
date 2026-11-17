@@ -10,9 +10,13 @@ namespace RoBIM.Feature;
 
 public sealed class WorksetInfo : IEquatable<WorksetInfo>
 {
+    public static readonly WorksetInfo Mixed = new(-1, "(혼합)", WorksetId.InvalidWorksetId);
+    public static readonly WorksetInfo Unplaced = new(-2, "(미배치)", WorksetId.InvalidWorksetId);
+
     public int Id { get; }
     public string Name { get; }
     public WorksetId RevitWorksetId { get; }
+    public bool IsSpecial => Id < 0;
 
     public WorksetInfo(int id, string name, WorksetId revitWorksetId)
     {
@@ -38,14 +42,15 @@ public sealed class WorksetInfo : IEquatable<WorksetInfo>
 public sealed class TypeWorksetItem : INotifyPropertyChanged
 {
     private bool _isSelected;
-    private WorksetInfo? _targetWorkset;
+    private WorksetInfo _selectedWorkset;
 
     public ElementId TypeId { get; }
     public string TypeName { get; }
     public FamilyWorksetItem Parent { get; }
     public List<ElementId> InstanceIds { get; }
     public int InstanceCount => InstanceIds.Count;
-    public string CurrentWorksetName { get; }
+    public WorksetInfo InitialWorkset { get; }
+    public ObservableCollection<WorksetInfo> AvailableWorksets { get; }
     public bool IsGroup => Parent.IsGroup;
 
     public bool IsSelected
@@ -61,14 +66,14 @@ public sealed class TypeWorksetItem : INotifyPropertyChanged
         }
     }
 
-    public WorksetInfo? TargetWorkset
+    public WorksetInfo SelectedWorkset
     {
-        get => _targetWorkset;
+        get => _selectedWorkset;
         set
         {
-            if (!Equals(_targetWorkset, value))
+            if (!Equals(_selectedWorkset, value))
             {
-                _targetWorkset = value;
+                _selectedWorkset = value;
                 OnPropertyChanged();
                 OnPropertyChanged(nameof(IsModified));
                 OnPropertyChanged(nameof(StatusDescription));
@@ -77,15 +82,14 @@ public sealed class TypeWorksetItem : INotifyPropertyChanged
         }
     }
 
-    public bool IsModified => TargetWorkset != null && (TargetWorkset.Name != CurrentWorksetName || CurrentWorksetName == "(혼합)");
+    public bool IsModified => SelectedWorkset != null && !SelectedWorkset.IsSpecial && !Equals(SelectedWorkset, InitialWorkset);
 
     public string StatusDescription
     {
         get
         {
-            if (TargetWorkset == null) return "유지";
-            if (!IsModified) return "동일";
-            return $"-> {TargetWorkset.Name}";
+            if (SelectedWorkset == null || Equals(SelectedWorkset, InitialWorkset)) return "동일";
+            return $"-> {SelectedWorkset.Name}";
         }
     }
 
@@ -94,13 +98,25 @@ public sealed class TypeWorksetItem : INotifyPropertyChanged
         string typeName,
         FamilyWorksetItem parent,
         List<ElementId> instanceIds,
-        string currentWorksetName)
+        WorksetInfo initialWorkset,
+        IReadOnlyList<WorksetInfo> standardWorksets)
     {
         TypeId = typeId;
         TypeName = typeName;
         Parent = parent;
         InstanceIds = instanceIds;
-        CurrentWorksetName = currentWorksetName;
+        InitialWorkset = initialWorkset;
+        _selectedWorkset = initialWorkset;
+
+        AvailableWorksets = new ObservableCollection<WorksetInfo>();
+        if (initialWorkset.IsSpecial)
+        {
+            AvailableWorksets.Add(initialWorkset);
+        }
+        foreach (var ws in standardWorksets)
+        {
+            AvailableWorksets.Add(ws);
+        }
     }
 
     public event PropertyChangedEventHandler? PropertyChanged;
@@ -113,7 +129,7 @@ public sealed class TypeWorksetItem : INotifyPropertyChanged
 public sealed class FamilyWorksetItem : INotifyPropertyChanged
 {
     private bool _isSelected;
-    private WorksetInfo? _targetWorkset;
+    private WorksetInfo _selectedWorkset;
 
     public CategoryWorksetItem ParentCategory { get; }
     public string CategoryName => ParentCategory.CategoryName;
@@ -122,23 +138,8 @@ public sealed class FamilyWorksetItem : INotifyPropertyChanged
     public ObservableCollection<TypeWorksetItem> Types { get; }
     public int TotalInstanceCount => Types.Sum(t => t.InstanceCount);
     public int TypeCount => Types.Count;
-
-    public string CurrentWorksetNameSummary
-    {
-        get
-        {
-            if (Types.Count == 0 || TotalInstanceCount == 0) return "(미배치)";
-            var distinct = Types
-                .Where(t => t.InstanceCount > 0)
-                .Select(t => t.CurrentWorksetName)
-                .Distinct()
-                .ToList();
-
-            if (distinct.Count == 1 && distinct[0] != "(혼합)")
-                return distinct[0];
-            return "(혼합)";
-        }
-    }
+    public WorksetInfo InitialWorkset { get; private set; }
+    public ObservableCollection<WorksetInfo> AvailableWorksets { get; private set; }
 
     public bool IsSelected
     {
@@ -157,20 +158,22 @@ public sealed class FamilyWorksetItem : INotifyPropertyChanged
         }
     }
 
-    public WorksetInfo? TargetWorkset
+    public WorksetInfo SelectedWorkset
     {
-        get => _targetWorkset;
+        get => _selectedWorkset;
         set
         {
-            if (!Equals(_targetWorkset, value))
+            if (!Equals(_selectedWorkset, value))
             {
-                _targetWorkset = value;
+                _selectedWorkset = value;
                 OnPropertyChanged();
-                if (value != null)
+                OnPropertyChanged(nameof(IsModified));
+                // 패밀리 레벨 변경 시 하위 모든 Type의 작업세트 자동 연동
+                if (value != null && !value.IsSpecial)
                 {
                     foreach (var t in Types)
                     {
-                        t.TargetWorkset = value;
+                        t.SelectedWorkset = value;
                     }
                 }
                 NotifyChildModified();
@@ -178,6 +181,7 @@ public sealed class FamilyWorksetItem : INotifyPropertyChanged
         }
     }
 
+    public bool IsModified => SelectedWorkset != null && !SelectedWorkset.IsSpecial && !Equals(SelectedWorkset, InitialWorkset);
     public int ModifiedInstanceCount => Types.Where(t => t.IsModified).Sum(t => t.InstanceCount);
     public int ModifiedTypeCount => Types.Count(t => t.IsModified);
 
@@ -187,6 +191,42 @@ public sealed class FamilyWorksetItem : INotifyPropertyChanged
         FamilyName = familyName;
         IsGroup = isGroup;
         Types = new ObservableCollection<TypeWorksetItem>();
+        InitialWorkset = WorksetInfo.Unplaced;
+        _selectedWorkset = WorksetInfo.Unplaced;
+        AvailableWorksets = new ObservableCollection<WorksetInfo>();
+    }
+
+    public void CalculateInitialWorkset(IReadOnlyList<WorksetInfo> standardWorksets)
+    {
+        if (Types.Count == 0 || TotalInstanceCount == 0)
+        {
+            InitialWorkset = WorksetInfo.Unplaced;
+        }
+        else
+        {
+            var distinct = Types
+                .Where(t => t.InstanceCount > 0)
+                .Select(t => t.InitialWorkset)
+                .Distinct()
+                .ToList();
+
+            if (distinct.Count == 1 && !distinct[0].IsSpecial)
+                InitialWorkset = distinct[0];
+            else
+                InitialWorkset = WorksetInfo.Mixed;
+        }
+
+        _selectedWorkset = InitialWorkset;
+
+        AvailableWorksets.Clear();
+        if (InitialWorkset.IsSpecial)
+        {
+            AvailableWorksets.Add(InitialWorkset);
+        }
+        foreach (var ws in standardWorksets)
+        {
+            AvailableWorksets.Add(ws);
+        }
     }
 
     public void NotifyChildModified()
@@ -206,7 +246,7 @@ public sealed class FamilyWorksetItem : INotifyPropertyChanged
 public sealed class CategoryWorksetItem : INotifyPropertyChanged
 {
     private bool _isSelected;
-    private WorksetInfo? _targetWorkset;
+    private WorksetInfo _selectedWorkset;
 
     public string CategoryName { get; }
     public bool IsGroup { get; }
@@ -214,24 +254,8 @@ public sealed class CategoryWorksetItem : INotifyPropertyChanged
     public int TotalInstanceCount => Families.Sum(f => f.TotalInstanceCount);
     public int FamilyCount => Families.Count;
     public int TypeCount => Families.Sum(f => f.TypeCount);
-
-    public string CurrentWorksetNameSummary
-    {
-        get
-        {
-            if (Families.Count == 0 || TotalInstanceCount == 0) return "(미배치)";
-            var distinct = Families
-                .SelectMany(f => f.Types)
-                .Where(t => t.InstanceCount > 0)
-                .Select(t => t.CurrentWorksetName)
-                .Distinct()
-                .ToList();
-
-            if (distinct.Count == 1 && distinct[0] != "(혼합)")
-                return distinct[0];
-            return "(혼합)";
-        }
-    }
+    public WorksetInfo InitialWorkset { get; private set; }
+    public ObservableCollection<WorksetInfo> AvailableWorksets { get; private set; }
 
     public bool IsSelected
     {
@@ -250,20 +274,22 @@ public sealed class CategoryWorksetItem : INotifyPropertyChanged
         }
     }
 
-    public WorksetInfo? TargetWorkset
+    public WorksetInfo SelectedWorkset
     {
-        get => _targetWorkset;
+        get => _selectedWorkset;
         set
         {
-            if (!Equals(_targetWorkset, value))
+            if (!Equals(_selectedWorkset, value))
             {
-                _targetWorkset = value;
+                _selectedWorkset = value;
                 OnPropertyChanged();
-                if (value != null)
+                OnPropertyChanged(nameof(IsModified));
+                // 카테고리 레벨 변경 시 하위 모든 패밀리와 타입의 작업세트 자동 연동
+                if (value != null && !value.IsSpecial)
                 {
                     foreach (var f in Families)
                     {
-                        f.TargetWorkset = value;
+                        f.SelectedWorkset = value;
                     }
                 }
                 NotifyChildModified();
@@ -271,6 +297,7 @@ public sealed class CategoryWorksetItem : INotifyPropertyChanged
         }
     }
 
+    public bool IsModified => SelectedWorkset != null && !SelectedWorkset.IsSpecial && !Equals(SelectedWorkset, InitialWorkset);
     public int ModifiedInstanceCount => Families.Sum(f => f.ModifiedInstanceCount);
     public int ModifiedTypeCount => Families.Sum(f => f.ModifiedTypeCount);
 
@@ -279,6 +306,48 @@ public sealed class CategoryWorksetItem : INotifyPropertyChanged
         CategoryName = categoryName;
         IsGroup = isGroup;
         Families = new ObservableCollection<FamilyWorksetItem>();
+        InitialWorkset = WorksetInfo.Unplaced;
+        _selectedWorkset = WorksetInfo.Unplaced;
+        AvailableWorksets = new ObservableCollection<WorksetInfo>();
+    }
+
+    public void CalculateInitialWorkset(IReadOnlyList<WorksetInfo> standardWorksets)
+    {
+        foreach (var f in Families)
+        {
+            f.CalculateInitialWorkset(standardWorksets);
+        }
+
+        if (Families.Count == 0 || TotalInstanceCount == 0)
+        {
+            InitialWorkset = WorksetInfo.Unplaced;
+        }
+        else
+        {
+            var distinct = Families
+                .SelectMany(f => f.Types)
+                .Where(t => t.InstanceCount > 0)
+                .Select(t => t.InitialWorkset)
+                .Distinct()
+                .ToList();
+
+            if (distinct.Count == 1 && !distinct[0].IsSpecial)
+                InitialWorkset = distinct[0];
+            else
+                InitialWorkset = WorksetInfo.Mixed;
+        }
+
+        _selectedWorkset = InitialWorkset;
+
+        AvailableWorksets.Clear();
+        if (InitialWorkset.IsSpecial)
+        {
+            AvailableWorksets.Add(InitialWorkset);
+        }
+        foreach (var ws in standardWorksets)
+        {
+            AvailableWorksets.Add(ws);
+        }
     }
 
     public void NotifyChildModified()

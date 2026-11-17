@@ -3,7 +3,7 @@
   "modules": [
     {
       "id": "workset-manager",
-      "version": "0.1.0-test.2",
+      "version": "0.1.0-test.3",
       "channel": "test",
       "libraries": [
         {

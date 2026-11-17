@@ -17,7 +17,6 @@ using WpfGrid = System.Windows.Controls.Grid;
 using WpfTextBox = System.Windows.Controls.TextBox;
 using WpfBinding = System.Windows.Data.Binding;
 using MediaColor = System.Windows.Media.Color;
-using Key = System.Windows.Input.Key;
 
 namespace RoBIM.Feature;
 
@@ -40,6 +39,10 @@ public sealed class WorksetManagerWindow : Window
     private readonly DataGrid _familyGrid;
     private readonly DataGrid _typeGrid;
 
+    private readonly GridCheckBehavior _catCheckBehavior;
+    private readonly GridCheckBehavior _famCheckBehavior;
+    private readonly GridCheckBehavior _typeCheckBehavior;
+
     private readonly TextBlock _categoryHeaderLabel;
     private readonly TextBlock _familyHeaderLabel;
     private readonly TextBlock _typeHeaderLabel;
@@ -53,11 +56,11 @@ public sealed class WorksetManagerWindow : Window
         var version = Assembly.GetExecutingAssembly()
             .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion.Split('+')[0]
             ?? Assembly.GetExecutingAssembly().GetName().Version?.ToString(3)
-            ?? "0.1.0-test.2";
+            ?? "0.1.0-test.3";
         Title = $"타입별 작업 세트 관리 · {version} · TEST";
 
-        Width = 1240;
-        Height = 740;
+        Width = 1260;
+        Height = 750;
         MinWidth = 1000;
         MinHeight = 560;
         WindowStartupLocation = WindowStartupLocation.CenterScreen;
@@ -65,10 +68,9 @@ public sealed class WorksetManagerWindow : Window
 
         // 1. 작업세트 수집
         _worksets = WorksetCollector.GetWorksets(_doc);
-        var wsLookup = _worksets.ToDictionary(w => w.Id, w => w.Name);
 
-        // 2. 카테고리 > 패밀리 > 타입 3단계 계층 수집 (그룹 포함)
-        _allCategories = WorksetCollector.CollectHierarchy(_doc, wsLookup);
+        // 2. 카테고리 > 패밀리 > 타입 3단계 계층 수집 (그룹 포함 및 초기 작업세트 계산)
+        _allCategories = WorksetCollector.CollectHierarchy(_doc, _worksets);
 
         // UI 레이아웃 빌드
         var root = new WpfGrid { Margin = RoBimTheme.ContentMargin };
@@ -192,6 +194,23 @@ public sealed class WorksetManagerWindow : Window
         WpfGrid.SetColumn(catPanel, 0);
         bodyGrid.Children.Add(catPanel);
 
+        // RoBIM 표준 표 입력 엔진 연결 (열 선택 + 체크박스 다중 처리)
+        new GridColumnSelection(_categoryGrid, fullRows: true);
+        _catCheckBehavior = new GridCheckBehavior(
+            _categoryGrid,
+            cell => cell.Column == _categoryGrid.Columns[0] ? "check" : null,
+            cell => (cell.Item as CategoryWorksetItem)?.IsSelected,
+            (val, cells) =>
+            {
+                bool target = val == true;
+                foreach (var c in cells.Select(x => x.Item).OfType<CategoryWorksetItem>().Distinct())
+                {
+                    c.IsSelected = target;
+                }
+                UpdateSummary();
+            },
+            blockUnmappedChecks: true);
+
         // --- 스플리터 1 ---
         var splitter1 = new GridSplitter
         {
@@ -220,6 +239,23 @@ public sealed class WorksetManagerWindow : Window
         WpfGrid.SetColumn(famPanel, 2);
         bodyGrid.Children.Add(famPanel);
 
+        // RoBIM 표준 표 입력 엔진 연결
+        new GridColumnSelection(_familyGrid, fullRows: true);
+        _famCheckBehavior = new GridCheckBehavior(
+            _familyGrid,
+            cell => cell.Column == _familyGrid.Columns[0] ? "check" : null,
+            cell => (cell.Item as FamilyWorksetItem)?.IsSelected,
+            (val, cells) =>
+            {
+                bool target = val == true;
+                foreach (var f in cells.Select(x => x.Item).OfType<FamilyWorksetItem>().Distinct())
+                {
+                    f.IsSelected = target;
+                }
+                UpdateSummary();
+            },
+            blockUnmappedChecks: true);
+
         // --- 스플리터 2 ---
         var splitter2 = new GridSplitter
         {
@@ -242,7 +278,7 @@ public sealed class WorksetManagerWindow : Window
         };
         var typeHintLabel = new TextBlock
         {
-            Text = "※ 특정 타입만 다른 작업세트로 변경하려면 아래에서 개별 지정하세요. (Shift/Ctrl 다중선택 및 Space 가능)",
+            Text = "※ 특정 타입만 다른 작업세트로 변경하려면 아래에서 개별 지정하세요. (현재 작업세트 표시 및 Shift/Ctrl 선택)",
             FontSize = 11,
             Foreground = Brushes.Gray,
             Margin = new Thickness(0, 2, 0, 0)
@@ -256,6 +292,23 @@ public sealed class WorksetManagerWindow : Window
         typePanel.Children.Add(_typeGrid);
         WpfGrid.SetColumn(typePanel, 4);
         bodyGrid.Children.Add(typePanel);
+
+        // RoBIM 표준 표 입력 엔진 연결
+        new GridColumnSelection(_typeGrid, fullRows: true);
+        _typeCheckBehavior = new GridCheckBehavior(
+            _typeGrid,
+            cell => cell.Column == _typeGrid.Columns[0] ? "check" : null,
+            cell => (cell.Item as TypeWorksetItem)?.IsSelected,
+            (val, cells) =>
+            {
+                bool target = val == true;
+                foreach (var t in cells.Select(x => x.Item).OfType<TypeWorksetItem>().Distinct())
+                {
+                    t.IsSelected = target;
+                }
+                UpdateSummary();
+            },
+            blockUnmappedChecks: true);
 
         WpfGrid.SetRow(bodyGrid, 1);
         root.Children.Add(bodyGrid);
@@ -333,34 +386,18 @@ public sealed class WorksetManagerWindow : Window
             CanUserDeleteRows = false,
             CanUserResizeRows = false,
             IsReadOnly = false,
-            SelectionMode = DataGridSelectionMode.Extended, // Shift, Ctrl 다중 선택 지원!
+            SelectionMode = DataGridSelectionMode.Extended,
             SelectionUnit = DataGridSelectionUnit.FullRow,
             ItemsSource = _filteredCategories,
             GridLinesVisibility = DataGridGridLinesVisibility.Horizontal,
             HeadersVisibility = DataGridHeadersVisibility.Column
         };
 
-        // Space 키 입력 시 선택된 모든 행의 체크박스 일괄 토글
-        grid.PreviewKeyDown += (s, e) =>
-        {
-            if (e.Key == Key.Space && grid.SelectedItems.Count > 0)
-            {
-                var selected = grid.SelectedItems.OfType<CategoryWorksetItem>().ToList();
-                if (selected.Count > 0)
-                {
-                    bool targetState = !selected[0].IsSelected;
-                    foreach (var c in selected) c.IsSelected = targetState;
-                    UpdateSummary();
-                    e.Handled = true;
-                }
-            }
-        };
-
         grid.Columns.Add(new DataGridCheckBoxColumn
         {
             Header = "선택",
-            Binding = new WpfBinding("IsSelected") { UpdateSourceTrigger = UpdateSourceTrigger.PropertyChanged },
-            Width = new DataGridLength(40)
+            Binding = new WpfBinding("IsSelected") { Mode = BindingMode.TwoWay, UpdateSourceTrigger = UpdateSourceTrigger.PropertyChanged },
+            Width = new DataGridLength(45)
         });
 
         grid.Columns.Add(new DataGridTextColumn
@@ -379,12 +416,12 @@ public sealed class WorksetManagerWindow : Window
             Width = new DataGridLength(50)
         });
 
-        // 1단계: 카테고리 전체 변경 작업세트 콤보박스
+        // 1단계: 카테고리 작업세트 드롭다운 (현재 상태가 기본 선택되어 보임!)
         var comboTemplate = new DataTemplate();
         var factory = new FrameworkElementFactory(typeof(ComboBox));
-        factory.SetValue(ComboBox.ItemsSourceProperty, _worksets);
+        factory.SetBinding(ComboBox.ItemsSourceProperty, new WpfBinding("AvailableWorksets"));
         factory.SetValue(ComboBox.DisplayMemberPathProperty, "Name");
-        factory.SetBinding(ComboBox.SelectedItemProperty, new WpfBinding("TargetWorkset")
+        factory.SetBinding(ComboBox.SelectedItemProperty, new WpfBinding("SelectedWorkset")
         {
             Mode = BindingMode.TwoWay,
             UpdateSourceTrigger = UpdateSourceTrigger.PropertyChanged
@@ -395,7 +432,7 @@ public sealed class WorksetManagerWindow : Window
 
         grid.Columns.Add(new DataGridTemplateColumn
         {
-            Header = "카테고리 전체 변경 작업세트",
+            Header = "카테고리 작업세트",
             CellTemplate = comboTemplate,
             Width = new DataGridLength(140)
         });
@@ -441,34 +478,18 @@ public sealed class WorksetManagerWindow : Window
             CanUserDeleteRows = false,
             CanUserResizeRows = false,
             IsReadOnly = false,
-            SelectionMode = DataGridSelectionMode.Extended, // Shift, Ctrl 다중 선택 지원!
+            SelectionMode = DataGridSelectionMode.Extended,
             SelectionUnit = DataGridSelectionUnit.FullRow,
             ItemsSource = _currentFamilies,
             GridLinesVisibility = DataGridGridLinesVisibility.Horizontal,
             HeadersVisibility = DataGridHeadersVisibility.Column
         };
 
-        // Space 키 입력 시 선택된 모든 행의 체크박스 일괄 토글
-        grid.PreviewKeyDown += (s, e) =>
-        {
-            if (e.Key == Key.Space && grid.SelectedItems.Count > 0)
-            {
-                var selected = grid.SelectedItems.OfType<FamilyWorksetItem>().ToList();
-                if (selected.Count > 0)
-                {
-                    bool targetState = !selected[0].IsSelected;
-                    foreach (var f in selected) f.IsSelected = targetState;
-                    UpdateSummary();
-                    e.Handled = true;
-                }
-            }
-        };
-
         grid.Columns.Add(new DataGridCheckBoxColumn
         {
             Header = "선택",
-            Binding = new WpfBinding("IsSelected") { UpdateSourceTrigger = UpdateSourceTrigger.PropertyChanged },
-            Width = new DataGridLength(40)
+            Binding = new WpfBinding("IsSelected") { Mode = BindingMode.TwoWay, UpdateSourceTrigger = UpdateSourceTrigger.PropertyChanged },
+            Width = new DataGridLength(45)
         });
 
         grid.Columns.Add(new DataGridTextColumn
@@ -495,12 +516,12 @@ public sealed class WorksetManagerWindow : Window
             Width = new DataGridLength(50)
         });
 
-        // 2단계: 패밀리 전체 변경 작업세트 콤보박스
+        // 2단계: 패밀리 작업세트 드롭다운 (현재 상태가 기본 선택되어 보임!)
         var comboTemplate = new DataTemplate();
         var factory = new FrameworkElementFactory(typeof(ComboBox));
-        factory.SetValue(ComboBox.ItemsSourceProperty, _worksets);
+        factory.SetBinding(ComboBox.ItemsSourceProperty, new WpfBinding("AvailableWorksets"));
         factory.SetValue(ComboBox.DisplayMemberPathProperty, "Name");
-        factory.SetBinding(ComboBox.SelectedItemProperty, new WpfBinding("TargetWorkset")
+        factory.SetBinding(ComboBox.SelectedItemProperty, new WpfBinding("SelectedWorkset")
         {
             Mode = BindingMode.TwoWay,
             UpdateSourceTrigger = UpdateSourceTrigger.PropertyChanged
@@ -511,7 +532,7 @@ public sealed class WorksetManagerWindow : Window
 
         grid.Columns.Add(new DataGridTemplateColumn
         {
-            Header = "패밀리 전체 변경 작업세트",
+            Header = "패밀리 작업세트",
             CellTemplate = comboTemplate,
             Width = new DataGridLength(140)
         });
@@ -546,34 +567,18 @@ public sealed class WorksetManagerWindow : Window
             CanUserDeleteRows = false,
             CanUserResizeRows = false,
             IsReadOnly = false,
-            SelectionMode = DataGridSelectionMode.Extended, // Shift, Ctrl 다중 선택 지원!
+            SelectionMode = DataGridSelectionMode.Extended,
             SelectionUnit = DataGridSelectionUnit.FullRow,
             ItemsSource = _currentTypes,
             GridLinesVisibility = DataGridGridLinesVisibility.Horizontal,
             HeadersVisibility = DataGridHeadersVisibility.Column
         };
 
-        // Space 키 입력 시 선택된 모든 행의 체크박스 일괄 토글
-        grid.PreviewKeyDown += (s, e) =>
-        {
-            if (e.Key == Key.Space && grid.SelectedItems.Count > 0)
-            {
-                var selected = grid.SelectedItems.OfType<TypeWorksetItem>().ToList();
-                if (selected.Count > 0)
-                {
-                    bool targetState = !selected[0].IsSelected;
-                    foreach (var t in selected) t.IsSelected = targetState;
-                    UpdateSummary();
-                    e.Handled = true;
-                }
-            }
-        };
-
         grid.Columns.Add(new DataGridCheckBoxColumn
         {
             Header = "선택",
-            Binding = new WpfBinding("IsSelected") { UpdateSourceTrigger = UpdateSourceTrigger.PropertyChanged },
-            Width = new DataGridLength(40)
+            Binding = new WpfBinding("IsSelected") { Mode = BindingMode.TwoWay, UpdateSourceTrigger = UpdateSourceTrigger.PropertyChanged },
+            Width = new DataGridLength(45)
         });
 
         grid.Columns.Add(new DataGridTextColumn
@@ -592,20 +597,12 @@ public sealed class WorksetManagerWindow : Window
             Width = new DataGridLength(50)
         });
 
-        grid.Columns.Add(new DataGridTextColumn
-        {
-            Header = "현재 작업세트",
-            Binding = new WpfBinding("CurrentWorksetName"),
-            IsReadOnly = true,
-            Width = new DataGridLength(100)
-        });
-
-        // 3단계: 타입별 개별 변경 작업세트 콤보박스
+        // 3단계: 타입별 작업세트 드롭다운 (현재 작업세트가 기본 선택되어 보임!)
         var comboTemplate = new DataTemplate();
         var factory = new FrameworkElementFactory(typeof(ComboBox));
-        factory.SetValue(ComboBox.ItemsSourceProperty, _worksets);
+        factory.SetBinding(ComboBox.ItemsSourceProperty, new WpfBinding("AvailableWorksets"));
         factory.SetValue(ComboBox.DisplayMemberPathProperty, "Name");
-        factory.SetBinding(ComboBox.SelectedItemProperty, new WpfBinding("TargetWorkset")
+        factory.SetBinding(ComboBox.SelectedItemProperty, new WpfBinding("SelectedWorkset")
         {
             Mode = BindingMode.TwoWay,
             UpdateSourceTrigger = UpdateSourceTrigger.PropertyChanged
@@ -616,9 +613,9 @@ public sealed class WorksetManagerWindow : Window
 
         grid.Columns.Add(new DataGridTemplateColumn
         {
-            Header = "타입별 변경 작업세트",
+            Header = "타입 작업세트",
             CellTemplate = comboTemplate,
-            Width = new DataGridLength(135)
+            Width = new DataGridLength(140)
         });
 
         grid.Columns.Add(new DataGridTextColumn
@@ -679,7 +676,7 @@ public sealed class WorksetManagerWindow : Window
     private void OnBulkApplyClick(object sender, RoutedEventArgs e)
     {
         var selectedWs = _bulkWorksetCombo.SelectedItem as WorksetInfo;
-        if (selectedWs == null) return;
+        if (selectedWs == null || selectedWs.IsSpecial) return;
 
         int appliedCount = 0;
 
@@ -688,7 +685,7 @@ public sealed class WorksetManagerWindow : Window
         {
             if (cat.IsSelected)
             {
-                cat.TargetWorkset = selectedWs;
+                cat.SelectedWorkset = selectedWs;
                 appliedCount++;
             }
             else
@@ -697,7 +694,7 @@ public sealed class WorksetManagerWindow : Window
                 {
                     if (fam.IsSelected)
                     {
-                        fam.TargetWorkset = selectedWs;
+                        fam.SelectedWorkset = selectedWs;
                         appliedCount++;
                     }
                     else
@@ -706,7 +703,7 @@ public sealed class WorksetManagerWindow : Window
                         {
                             if (t.IsSelected)
                             {
-                                t.TargetWorkset = selectedWs;
+                                t.SelectedWorkset = selectedWs;
                                 appliedCount++;
                             }
                         }
@@ -715,35 +712,35 @@ public sealed class WorksetManagerWindow : Window
             }
         }
 
-        // 2. 체크박스가 없더라도 현재 Shift/Ctrl로 파랗게 다중 선택된 행들(SelectedItems)이 있다면 함께 적용
-        if (_categoryGrid.SelectedItems.Count > 1)
+        // 2. 체크박스 선택 외에 Shift/Ctrl로 파랗게 선택된 행들(SelectedItems)도 함께 적용
+        if (_categoryGrid.SelectedItems.Count > 0)
         {
             foreach (var cat in _categoryGrid.SelectedItems.OfType<CategoryWorksetItem>())
             {
-                cat.TargetWorkset = selectedWs;
+                cat.SelectedWorkset = selectedWs;
                 appliedCount++;
             }
         }
-        if (_familyGrid.SelectedItems.Count > 1)
+        if (_familyGrid.SelectedItems.Count > 0)
         {
             foreach (var fam in _familyGrid.SelectedItems.OfType<FamilyWorksetItem>())
             {
-                fam.TargetWorkset = selectedWs;
+                fam.SelectedWorkset = selectedWs;
                 appliedCount++;
             }
         }
-        if (_typeGrid.SelectedItems.Count > 1)
+        if (_typeGrid.SelectedItems.Count > 0)
         {
             foreach (var t in _typeGrid.SelectedItems.OfType<TypeWorksetItem>())
             {
-                t.TargetWorkset = selectedWs;
+                t.SelectedWorkset = selectedWs;
                 appliedCount++;
             }
         }
 
         if (appliedCount == 0)
         {
-            TaskDialog.Show("일괄 지정", "선택된 카테고리, 패밀리 또는 타입이 없습니다.\n목록 좌측의 [선택] 체크박스를 체크하거나 Shift/Ctrl로 행을 다중 선택한 후 다시 시도해 주세요.");
+            TaskDialog.Show("일괄 지정", "선택된 카테고리, 패밀리 또는 타입이 없습니다.\n목록 좌측의 [선택] 체크박스를 클릭하거나 Shift/Ctrl로 행을 다중 선택한 후 다시 시도해 주세요.");
             return;
         }
 
@@ -754,15 +751,15 @@ public sealed class WorksetManagerWindow : Window
     {
         foreach (var cat in _allCategories)
         {
-            cat.TargetWorkset = null;
+            cat.SelectedWorkset = cat.InitialWorkset;
             cat.IsSelected = false;
             foreach (var fam in cat.Families)
             {
-                fam.TargetWorkset = null;
+                fam.SelectedWorkset = fam.InitialWorkset;
                 fam.IsSelected = false;
                 foreach (var t in fam.Types)
                 {
-                    t.TargetWorkset = null;
+                    t.SelectedWorkset = t.InitialWorkset;
                     t.IsSelected = false;
                 }
             }
@@ -798,7 +795,7 @@ public sealed class WorksetManagerWindow : Window
         var modifiedTypes = _allCategories
             .SelectMany(c => c.Families)
             .SelectMany(f => f.Types)
-            .Where(t => t.IsModified && t.TargetWorkset != null)
+            .Where(t => t.IsModified && t.SelectedWorkset != null && !t.SelectedWorkset.IsSpecial)
             .ToList();
 
         if (modifiedTypes.Count == 0)
@@ -828,10 +825,10 @@ public sealed class WorksetManagerWindow : Window
 
             foreach (var typeItem in modifiedTypes)
             {
-                int targetWsId = typeItem.TargetWorkset!.Id;
+                int targetWsId = typeItem.SelectedWorkset.Id;
                 bool anyUpdated = false;
 
-                // 1. 배치된 모든 인스턴스(그룹 인스턴스 포함) 수정 시도 (개별 오류 격리 및 관용적 처리)
+                // 1. 배치된 모든 인스턴스(그룹 인스턴스 포함) 수정 시도
                 foreach (var instId in typeItem.InstanceIds)
                 {
                     try

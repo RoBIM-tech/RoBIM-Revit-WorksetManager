@@ -24,8 +24,10 @@ public static class WorksetCollector
 
     public static List<CategoryWorksetItem> CollectHierarchy(
         Document doc,
-        IReadOnlyDictionary<int, string> worksetLookup)
+        IReadOnlyList<WorksetInfo> standardWorksets)
     {
+        var wsLookup = standardWorksets.ToDictionary(w => w.Id, w => w);
+
         // 1. 모든 일반 인스턴스 요소 수집 및 TypeId별 그룹화
         var instancesByTypeId = new Dictionary<ElementId, List<(ElementId ElementId, int WorksetId)>>();
 
@@ -34,15 +36,13 @@ public static class WorksetCollector
 
         foreach (var elem in instanceCollector)
         {
-            if (elem is Group) continue; // 그룹 인스턴스는 아래에서 별도 수집
+            if (elem is Group) continue;
 
             var wsParam = elem.get_Parameter(BuiltInParameter.ELEM_PARTITION_PARAM);
-            if (wsParam == null)
-                continue;
+            if (wsParam == null) continue;
 
             var typeId = elem.GetTypeId();
-            if (typeId == ElementId.InvalidElementId)
-                continue;
+            if (typeId == ElementId.InvalidElementId) continue;
 
             int wsId = wsParam.AsInteger();
             if (!instancesByTypeId.TryGetValue(typeId, out var list))
@@ -63,7 +63,7 @@ public static class WorksetCollector
 
         foreach (var elementType in typeCollector)
         {
-            if (elementType is GroupType) continue; // 그룹 타입은 아래에서 별도 처리
+            if (elementType is GroupType) continue;
 
             var category = elementType.Category;
             if (category == null || category.CategoryType != CategoryType.Model)
@@ -101,26 +101,34 @@ public static class WorksetCollector
                 catItem.Families.Add(familyItem);
             }
 
-            // 인스턴스 정보 확인
+            // 인스턴스 정보 확인 및 InitialWorkset 결정
             var instanceIds = new List<ElementId>();
-            string currentWsName = "(미배치)";
+            WorksetInfo initialWorkset = WorksetInfo.Unplaced;
 
             if (instancesByTypeId.TryGetValue(elementType.Id, out var instList) && instList.Count > 0)
             {
                 instanceIds = instList.Select(i => i.ElementId).ToList();
-                var distinctWs = instList
-                    .Select(i => worksetLookup.TryGetValue(i.WorksetId, out var name) ? name : $"Workset {i.WorksetId}")
-                    .Distinct()
-                    .ToList();
+                var distinctWsIds = instList.Select(i => i.WorksetId).Distinct().ToList();
 
-                currentWsName = distinctWs.Count == 1 ? distinctWs[0] : "(혼합)";
+                if (distinctWsIds.Count == 1)
+                {
+                    int wId = distinctWsIds[0];
+                    if (wsLookup.TryGetValue(wId, out var found))
+                        initialWorkset = found;
+                    else
+                        initialWorkset = new WorksetInfo(wId, $"Workset {wId}", new WorksetId(wId));
+                }
+                else
+                {
+                    initialWorkset = WorksetInfo.Mixed;
+                }
             }
             else
             {
                 var typeWsParam = elementType.get_Parameter(BuiltInParameter.ELEM_PARTITION_PARAM);
-                if (typeWsParam != null && worksetLookup.TryGetValue(typeWsParam.AsInteger(), out var name))
+                if (typeWsParam != null && wsLookup.TryGetValue(typeWsParam.AsInteger(), out var found))
                 {
-                    currentWsName = name;
+                    initialWorkset = found;
                 }
             }
 
@@ -129,23 +137,31 @@ public static class WorksetCollector
                 typeName,
                 familyItem,
                 instanceIds,
-                currentWsName);
+                initialWorkset,
+                standardWorksets);
 
             familyItem.Types.Add(typeItem);
         }
 
         // 3. 모델 그룹(Group & GroupType) 수집 및 계층 추가
-        CollectGroupHierarchy(doc, worksetLookup, categoriesMap);
+        CollectGroupHierarchy(doc, standardWorksets, wsLookup, categoriesMap);
+
+        // 4. 모든 카테고리/패밀리의 초기 작업세트 및 가용 작업세트 목록 계산
+        foreach (var cat in categoriesMap.Values)
+        {
+            cat.CalculateInitialWorkset(standardWorksets);
+        }
 
         return categoriesMap.Values
-            .OrderBy(c => c.IsGroup ? 1 : 0) // 일반 카테고리 먼저, 그룹은 뒤나 특수 위치
+            .OrderBy(c => c.IsGroup ? 1 : 0)
             .ThenBy(c => c.CategoryName, StringComparer.CurrentCultureIgnoreCase)
             .ToList();
     }
 
     private static void CollectGroupHierarchy(
         Document doc,
-        IReadOnlyDictionary<int, string> worksetLookup,
+        IReadOnlyList<WorksetInfo> standardWorksets,
+        Dictionary<int, WorksetInfo> wsLookup,
         Dictionary<string, CategoryWorksetItem> categoriesMap)
     {
         var groupInstances = new FilteredElementCollector(doc)
@@ -185,24 +201,32 @@ public static class WorksetCollector
         foreach (var gt in groupTypes)
         {
             var instanceIds = new List<ElementId>();
-            string currentWsName = "(미배치)";
+            WorksetInfo initialWorkset = WorksetInfo.Unplaced;
 
             if (groupsByTypeId.TryGetValue(gt.Id, out var gList) && gList.Count > 0)
             {
                 instanceIds = gList.Select(i => i.ElementId).ToList();
-                var distinctWs = gList
-                    .Select(i => worksetLookup.TryGetValue(i.WorksetId, out var name) ? name : $"Workset {i.WorksetId}")
-                    .Distinct()
-                    .ToList();
+                var distinctWsIds = gList.Select(i => i.WorksetId).Distinct().ToList();
 
-                currentWsName = distinctWs.Count == 1 ? distinctWs[0] : "(혼합)";
+                if (distinctWsIds.Count == 1)
+                {
+                    int wId = distinctWsIds[0];
+                    if (wsLookup.TryGetValue(wId, out var found))
+                        initialWorkset = found;
+                    else
+                        initialWorkset = new WorksetInfo(wId, $"Workset {wId}", new WorksetId(wId));
+                }
+                else
+                {
+                    initialWorkset = WorksetInfo.Mixed;
+                }
             }
             else
             {
                 var typeWsParam = gt.get_Parameter(BuiltInParameter.ELEM_PARTITION_PARAM);
-                if (typeWsParam != null && worksetLookup.TryGetValue(typeWsParam.AsInteger(), out var name))
+                if (typeWsParam != null && wsLookup.TryGetValue(typeWsParam.AsInteger(), out var found))
                 {
-                    currentWsName = name;
+                    initialWorkset = found;
                 }
             }
 
@@ -211,7 +235,8 @@ public static class WorksetCollector
                 gt.Name,
                 groupFamilyItem,
                 instanceIds,
-                currentWsName);
+                initialWorkset,
+                standardWorksets);
 
             groupFamilyItem.Types.Add(typeItem);
         }
