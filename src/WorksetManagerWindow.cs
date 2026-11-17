@@ -28,16 +28,14 @@ public sealed class WorksetManagerWindow : Window
 
     private readonly ObservableCollection<WorksetHierarchyNode> _displayedNodes = new();
     private readonly WpfTextBox _searchBox;
-    private readonly ComboBox _bulkWorksetCombo;
-    private readonly Button _btnBulkApply;
 
     private readonly DataGrid _treeGrid;
-    private readonly GridCheckBehavior _gridCheckBehavior;
     private readonly TextBlock _summaryLabel;
     private readonly Button _applyButton;
 
     private string _currentSortProperty = "Name";
     private ListSortDirection _currentSortDirection = ListSortDirection.Ascending;
+    private bool _isBulkUpdating = false;
 
     public WorksetManagerWindow(Document doc)
     {
@@ -46,13 +44,13 @@ public sealed class WorksetManagerWindow : Window
         var version = Assembly.GetExecutingAssembly()
             .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion.Split('+')[0]
             ?? Assembly.GetExecutingAssembly().GetName().Version?.ToString(3)
-            ?? "0.1.0-test.4";
+            ?? "0.1.0-test.5";
         Title = $"타입별 작업 세트 관리 · {version} · TEST";
 
-        Width = 1100;
-        Height = 720;
-        MinWidth = 900;
-        MinHeight = 540;
+        Width = 1120;
+        Height = 740;
+        MinWidth = 920;
+        MinHeight = 560;
         WindowStartupLocation = WindowStartupLocation.CenterScreen;
         RoBimTheme.Apply(this);
 
@@ -71,7 +69,7 @@ public sealed class WorksetManagerWindow : Window
         root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) }); // 1: TreeGrid
         root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto }); // 2: Footer
 
-        // ----------------- Row 0: 상단 툴바 -----------------
+        // ----------------- Row 0: 상단 툴바 (검색 및 전체 펼침/접힘만 심플하게 유지) -----------------
         var toolbarPanel = new Border
         {
             Padding = new Thickness(8),
@@ -84,10 +82,10 @@ public sealed class WorksetManagerWindow : Window
 
         var toolbarGrid = new WpfGrid();
         toolbarGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto }); // 검색 라벨
-        toolbarGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(240) }); // 검색창
+        toolbarGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(280) }); // 검색창
         toolbarGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto }); // 펼치기/접기 버튼들
         toolbarGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) }); // 여백
-        toolbarGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto }); // 일괄 지정 콤보 및 버튼
+        toolbarGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto }); // 안내 팁
 
         var searchLabel = new TextBlock
         {
@@ -102,7 +100,7 @@ public sealed class WorksetManagerWindow : Window
         _searchBox = new WpfTextBox
         {
             VerticalAlignment = VerticalAlignment.Center,
-            Padding = new Thickness(4, 2, 4, 2)
+            Padding = new Thickness(6, 3, 6, 3)
         };
         _searchBox.TextChanged += (s, e) => RefreshDisplayedNodes();
         WpfGrid.SetColumn(_searchBox, 1);
@@ -111,14 +109,14 @@ public sealed class WorksetManagerWindow : Window
         var expandCollapsePanel = new StackPanel
         {
             Orientation = Orientation.Horizontal,
-            Margin = new Thickness(12, 0, 0, 0)
+            Margin = new Thickness(14, 0, 0, 0)
         };
 
         var btnExpandAll = new Button
         {
             Content = "모두 펼치기",
-            Padding = new Thickness(8, 3, 8, 3),
-            Margin = new Thickness(0, 0, 4, 0)
+            Padding = new Thickness(10, 4, 10, 4),
+            Margin = new Thickness(0, 0, 6, 0)
         };
         btnExpandAll.Click += (s, e) => SetAllExpanded(true);
         expandCollapsePanel.Children.Add(btnExpandAll);
@@ -126,7 +124,7 @@ public sealed class WorksetManagerWindow : Window
         var btnCollapseAll = new Button
         {
             Content = "모두 접기",
-            Padding = new Thickness(8, 3, 8, 3)
+            Padding = new Thickness(10, 4, 10, 4)
         };
         btnCollapseAll.Click += (s, e) => SetAllExpanded(false);
         expandCollapsePanel.Children.Add(btnCollapseAll);
@@ -134,48 +132,22 @@ public sealed class WorksetManagerWindow : Window
         WpfGrid.SetColumn(expandCollapsePanel, 2);
         toolbarGrid.Children.Add(expandCollapsePanel);
 
-        // 일괄 지정 패널
-        var bulkPanel = new StackPanel
+        // 우측 안내 팁 (Revit VV/VG 안내)
+        var tipText = new TextBlock
         {
-            Orientation = Orientation.Horizontal,
-            VerticalAlignment = VerticalAlignment.Center
-        };
-
-        var bulkLabel = new TextBlock
-        {
-            Text = "선택 항목 일괄 지정:",
+            Text = "💡 Tip: 여러 행을 선택(Shift/Ctrl)한 상태에서 드롭다운을 바꾸면 선택 항목이 일괄 변경됩니다.",
             VerticalAlignment = VerticalAlignment.Center,
-            FontWeight = FontWeights.SemiBold,
-            Margin = new Thickness(0, 0, 6, 0)
+            Foreground = SystemColors.GrayTextBrush,
+            FontSize = 11.5
         };
-        bulkPanel.Children.Add(bulkLabel);
-
-        _bulkWorksetCombo = new ComboBox
-        {
-            Width = 180,
-            ItemsSource = _worksets,
-            DisplayMemberPath = "Name",
-            Margin = new Thickness(0, 0, 6, 0)
-        };
-        if (_worksets.Count > 0) _bulkWorksetCombo.SelectedIndex = 0;
-        bulkPanel.Children.Add(_bulkWorksetCombo);
-
-        _btnBulkApply = new Button
-        {
-            Content = "선택 일괄 적용",
-            Padding = new Thickness(10, 3, 10, 3)
-        };
-        _btnBulkApply.Click += OnBulkApplyClicked;
-        bulkPanel.Children.Add(_btnBulkApply);
-
-        WpfGrid.SetColumn(bulkPanel, 4);
-        toolbarGrid.Children.Add(bulkPanel);
+        WpfGrid.SetColumn(tipText, 4);
+        toolbarGrid.Children.Add(tipText);
 
         toolbarPanel.Child = toolbarGrid;
         WpfGrid.SetRow(toolbarPanel, 0);
         root.Children.Add(toolbarPanel);
 
-        // ----------------- Row 1: 단일 계층 Tree-Grid (DataGrid) -----------------
+        // ----------------- Row 1: 단일 계층 Tree-Grid (체크박스 제거, 계층 시각화 강화) -----------------
         _treeGrid = new DataGrid
         {
             AutoGenerateColumns = false,
@@ -183,41 +155,27 @@ public sealed class WorksetManagerWindow : Window
             CanUserDeleteRows = false,
             CanUserResizeRows = false,
             CanUserSortColumns = true,
-            HeadersVisibility = DataGridHeadersVisibility.All,
+            HeadersVisibility = DataGridHeadersVisibility.Column,
             SelectionMode = DataGridSelectionMode.Extended,
             SelectionUnit = DataGridSelectionUnit.FullRow,
             GridLinesVisibility = DataGridGridLinesVisibility.Horizontal,
-            HorizontalGridLinesBrush = new SolidColorBrush(MediaColor.FromRgb(230, 230, 230)),
+            HorizontalGridLinesBrush = new SolidColorBrush(MediaColor.FromRgb(225, 230, 235)),
             ItemsSource = _displayedNodes,
             BorderBrush = SystemColors.ActiveBorderBrush,
             BorderThickness = new Thickness(1)
         };
 
         _treeGrid.Sorting += OnTreeGridSorting;
+        _treeGrid.PreviewKeyDown += OnTreeGridPreviewKeyDown;
+        _treeGrid.MouseDoubleClick += OnGridMouseDoubleClick;
+        _treeGrid.SelectionChanged += (s, e) => UpdateSummary();
 
-        // 1) 체크박스 열
-        var checkCol = new DataGridCheckBoxColumn
-        {
-            Header = "선택",
-            Width = 46,
-            CanUserSort = false,
-            Binding = new WpfBinding("IsSelected")
-            {
-                Mode = BindingMode.TwoWay,
-                UpdateSourceTrigger = UpdateSourceTrigger.PropertyChanged
-            },
-            ElementStyle = new Style(typeof(CheckBox))
-            {
-                Setters =
-                {
-                    new Setter(CheckBox.HorizontalAlignmentProperty, HorizontalAlignment.Center),
-                    new Setter(CheckBox.VerticalAlignmentProperty, VerticalAlignment.Center)
-                }
-            }
-        };
-        _treeGrid.Columns.Add(checkCol);
+        // DataGridRow 스타일 (계층별 배경색 밴딩)
+        var rowStyle = new Style(typeof(DataGridRow));
+        rowStyle.Setters.Add(new Setter(DataGridRow.BackgroundProperty, new WpfBinding("RowBackground")));
+        _treeGrid.RowStyle = rowStyle;
 
-        // 2) 이름 (프로젝트 브라우저 스타일 계층 트리: 인덴트 + 토글 심볼 + 아이콘 + 이름)
+        // 1) 이름 열 (프로젝트 브라우저 스타일 계층 트리: 인덴트 + 토글 심볼 + 아이콘 + 이름 + 요약 배지)
         var nameCol = new DataGridTemplateColumn
         {
             Header = "이름 (프로젝트 브라우저 트리)",
@@ -247,16 +205,27 @@ public sealed class WorksetManagerWindow : Window
         iconFactory.SetValue(TextBlock.VerticalAlignmentProperty, VerticalAlignment.Center);
         namePanelFactory.AppendChild(iconFactory);
 
-        // 이름 텍스트
+        // 이름 텍스트 (위계별 굵기 및 크기 차등)
         var nameTextFactory = new FrameworkElementFactory(typeof(TextBlock));
         nameTextFactory.SetBinding(TextBlock.TextProperty, new WpfBinding("Name"));
+        nameTextFactory.SetBinding(TextBlock.FontWeightProperty, new WpfBinding("NodeFontWeight"));
+        nameTextFactory.SetBinding(TextBlock.FontSizeProperty, new WpfBinding("NodeFontSize"));
         nameTextFactory.SetValue(TextBlock.VerticalAlignmentProperty, VerticalAlignment.Center);
         namePanelFactory.AppendChild(nameTextFactory);
+
+        // 서브 요약 배지 (예: [12개 패밀리 / 48개 요소])
+        var subBadgeFactory = new FrameworkElementFactory(typeof(TextBlock));
+        subBadgeFactory.SetBinding(TextBlock.TextProperty, new WpfBinding("SubSummary"));
+        subBadgeFactory.SetValue(TextBlock.ForegroundProperty, new SolidColorBrush(MediaColor.FromRgb(108, 117, 125)));
+        subBadgeFactory.SetValue(TextBlock.FontSizeProperty, 11.0);
+        subBadgeFactory.SetValue(TextBlock.MarginProperty, new Thickness(8, 0, 0, 0));
+        subBadgeFactory.SetValue(TextBlock.VerticalAlignmentProperty, VerticalAlignment.Center);
+        namePanelFactory.AppendChild(subBadgeFactory);
 
         nameCol.CellTemplate = new DataTemplate { VisualTree = namePanelFactory };
         _treeGrid.Columns.Add(nameCol);
 
-        // 3) 인스턴스 수 열
+        // 2) 인스턴스 수 열
         var countCol = new DataGridTextColumn
         {
             Header = "요소 수",
@@ -269,13 +238,13 @@ public sealed class WorksetManagerWindow : Window
                 {
                     new Setter(TextBlock.TextAlignmentProperty, TextAlignment.Right),
                     new Setter(TextBlock.VerticalAlignmentProperty, VerticalAlignment.Center),
-                    new Setter(TextBlock.MarginProperty, new Thickness(0, 0, 8, 0))
+                    new Setter(TextBlock.MarginProperty, new Thickness(0, 0, 10, 0))
                 }
             }
         };
         _treeGrid.Columns.Add(countCol);
 
-        // 4) 작업 세트 드롭다운 열
+        // 3) 작업 세트 드롭다운 열 (VV/VG 다중 편집 지원)
         var worksetCol = new DataGridTemplateColumn
         {
             Header = "작업 세트",
@@ -292,14 +261,15 @@ public sealed class WorksetManagerWindow : Window
         comboFactory.SetValue(ComboBox.DisplayMemberPathProperty, "Name");
         comboFactory.SetValue(ComboBox.VerticalAlignmentProperty, VerticalAlignment.Center);
         comboFactory.SetValue(ComboBox.MarginProperty, new Thickness(4, 2, 4, 2));
+        comboFactory.AddHandler(ComboBox.SelectionChangedEvent, new SelectionChangedEventHandler(OnWorksetComboSelectionChanged));
         worksetCol.CellTemplate = new DataTemplate { VisualTree = comboFactory };
         _treeGrid.Columns.Add(worksetCol);
 
-        // 5) 상태 열
+        // 4) 상태 열
         var statusCol = new DataGridTextColumn
         {
             Header = "상태",
-            Width = 130,
+            Width = 140,
             Binding = new WpfBinding("StatusDescription"),
             CanUserSort = false,
             ElementStyle = new Style(typeof(TextBlock))
@@ -307,40 +277,20 @@ public sealed class WorksetManagerWindow : Window
                 Setters =
                 {
                     new Setter(TextBlock.VerticalAlignmentProperty, VerticalAlignment.Center),
-                    new Setter(TextBlock.MarginProperty, new Thickness(4, 0, 4, 0))
+                    new Setter(TextBlock.MarginProperty, new Thickness(6, 0, 6, 0))
                 }
             }
         };
         _treeGrid.Columns.Add(statusCol);
 
-        // 표준 표 엔진 연결 (GridColumnSelection + GridCheckBehavior)
+        // 순수 행 다중 선택 연결
         _ = new GridColumnSelection(_treeGrid, fullRows: true);
-
-        _gridCheckBehavior = new GridCheckBehavior(
-            _treeGrid,
-            cell => cell.Column == checkCol ? "all" : null,
-            cell => cell.Item is WorksetHierarchyNode node ? node.IsSelected : null,
-            (val, cells) =>
-            {
-                bool target = val == true;
-                foreach (var c in cells)
-                {
-                    if (c.Item is WorksetHierarchyNode n)
-                    {
-                        n.IsSelected = target;
-                    }
-                }
-                UpdateSummary();
-            },
-            blockUnmappedChecks: false,
-            defaultCheckColumn: () => checkCol
-        );
 
         WpfGrid.SetRow(_treeGrid, 1);
         root.Children.Add(_treeGrid);
 
         // ----------------- Row 2: 하단 요약 및 실행 버튼 바 -----------------
-        var footerGrid = new WpfGrid { Margin = new Thickness(0, 10, 0, 0) };
+        var footerGrid = new WpfGrid { Margin = new Thickness(0, 12, 0, 0) };
         footerGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         footerGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
 
@@ -388,6 +338,89 @@ public sealed class WorksetManagerWindow : Window
 
         // 초기 화면 표시 및 요약 갱신
         RefreshDisplayedNodes();
+    }
+
+    private void OnGridMouseDoubleClick(object sender, MouseButtonEventArgs e)
+    {
+        var row = GridColumnSelection.Ancestor<DataGridRow>(e.OriginalSource as DependencyObject);
+        if (row?.DataContext is WorksetHierarchyNode node && node.HasChildren)
+        {
+            node.IsExpanded = !node.IsExpanded;
+            RefreshDisplayedNodes();
+            e.Handled = true;
+        }
+    }
+
+    private void OnTreeGridPreviewKeyDown(object sender, KeyEventArgs e)
+    {
+        if (_treeGrid.SelectedItem is not WorksetHierarchyNode currentNode) return;
+
+        if (e.Key == Key.Right)
+        {
+            if (currentNode.HasChildren && !currentNode.IsExpanded)
+            {
+                currentNode.IsExpanded = true;
+                RefreshDisplayedNodes();
+                e.Handled = true;
+            }
+        }
+        else if (e.Key == Key.Left)
+        {
+            if (currentNode.HasChildren && currentNode.IsExpanded)
+            {
+                currentNode.IsExpanded = false;
+                RefreshDisplayedNodes();
+                e.Handled = true;
+            }
+            else if (currentNode.Parent != null)
+            {
+                _treeGrid.SelectedItem = currentNode.Parent;
+                _treeGrid.ScrollIntoView(currentNode.Parent);
+                e.Handled = true;
+            }
+        }
+    }
+
+    private void OnWorksetComboSelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_isBulkUpdating) return;
+        if (sender is not ComboBox combo || combo.DataContext is not WorksetHierarchyNode triggerNode) return;
+        if (combo.SelectedItem is not WorksetInfo targetWorkset || targetWorkset.IsSpecial) return;
+
+        // 다중 선택 상태(VV/VG 방식) 일괄 적용 검사
+        var selectedNodes = _treeGrid.SelectedItems.Cast<WorksetHierarchyNode>().ToList();
+        if (selectedNodes.Count > 1 && selectedNodes.Contains(triggerNode))
+        {
+            _isBulkUpdating = true;
+            try
+            {
+                // 선택된 항목 중 타입(Level 2) 노드들만 추출
+                var typeNodes = selectedNodes.Where(n => n.NodeType == HierarchyNodeType.Type).ToList();
+
+                // 만약 선택된 노드 중 타입이 없고 상위 카테고리/패밀리만 선택되어 있다면 그 하위 타입들을 수집
+                if (typeNodes.Count == 0)
+                {
+                    typeNodes = selectedNodes.SelectMany(n => GetAllTypeNodes(new[] { n })).Distinct().ToList();
+                }
+
+                foreach (var tNode in typeNodes)
+                {
+                    tNode.SelectedWorkset = targetWorkset;
+                }
+
+                // 상위 노드들 상태 갱신
+                foreach (var sNode in selectedNodes)
+                {
+                    sNode.NotifyModified();
+                }
+            }
+            finally
+            {
+                _isBulkUpdating = false;
+            }
+
+            UpdateSummary();
+        }
     }
 
     private void OnToggleExpandClicked(object sender, RoutedEventArgs e)
@@ -512,7 +545,6 @@ public sealed class WorksetManagerWindow : Window
 
             _displayedNodes.Add(node);
 
-            // 검색 중이면 일치하는 자식이 있는 경우 자동 펼침 처리
             bool expand = node.IsExpanded || (isFiltered && !string.IsNullOrEmpty(filter));
             if (expand)
             {
@@ -542,31 +574,10 @@ public sealed class WorksetManagerWindow : Window
         int modTypeCount = modifiedTypes.Count;
         int modInstanceCount = modifiedTypes.Sum(t => t.InstanceCount);
 
-        _summaryLabel.Text = $"카테고리: {_allRoots.Count}개 | 전체: {totalTypes}개 타입 ({totalInstances:N0}개 요소) | 변경 예정: {modTypeCount}개 타입 ({modInstanceCount:N0}개 요소)";
-    }
+        int selectedCount = _treeGrid?.SelectedItems.Count ?? 0;
+        string selectionText = selectedCount > 0 ? $"선택: {selectedCount}개 행 | " : string.Empty;
 
-    private void OnBulkApplyClicked(object sender, RoutedEventArgs e)
-    {
-        if (_bulkWorksetCombo.SelectedItem is not WorksetInfo targetWorkset)
-        {
-            TaskDialog.Show("작업 세트 관리", "일괄 적용할 작업 세트를 선택해주세요.");
-            return;
-        }
-
-        // 체크된 노드들 수집
-        var selectedNodes = GetAllNodes(_allRoots).Where(n => n.IsSelected).ToList();
-        if (selectedNodes.Count == 0)
-        {
-            TaskDialog.Show("작업 세트 관리", "체크박스로 선택된 항목이 없습니다. 표에서 원하는 행을 체크해주세요.");
-            return;
-        }
-
-        foreach (var node in selectedNodes)
-        {
-            node.SelectedWorkset = targetWorkset;
-        }
-
-        UpdateSummary();
+        _summaryLabel.Text = $"{selectionText}카테고리: {_allRoots.Count}개 | 전체: {totalTypes}개 타입 ({totalInstances:N0}개 요소) | 변경 예정: {modTypeCount}개 타입 ({modInstanceCount:N0}개 요소)";
     }
 
     private void OnApplyClicked(object sender, RoutedEventArgs e)

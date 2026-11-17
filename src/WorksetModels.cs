@@ -5,6 +5,7 @@ using System.ComponentModel;
 using System.Linq;
 using System.Runtime.CompilerServices;
 using System.Windows;
+using System.Windows.Media;
 using Autodesk.Revit.DB;
 
 namespace RoBIM.Feature;
@@ -56,7 +57,40 @@ public sealed class WorksetHierarchyNode : INotifyPropertyChanged
     public HierarchyNodeType NodeType { get; }
     public string Name { get; }
     public int Level { get; }
-    public Thickness IndentMargin => new Thickness(Level * 16, 0, 0, 0);
+
+    public Thickness IndentMargin => NodeType switch
+    {
+        HierarchyNodeType.Category => new Thickness(6, 0, 0, 0),
+        HierarchyNodeType.Family => new Thickness(22, 0, 0, 0),
+        _ => new Thickness(40, 0, 0, 0)
+    };
+
+    public Brush RowBackground => NodeType switch
+    {
+        HierarchyNodeType.Category => new SolidColorBrush(System.Windows.Media.Color.FromRgb(238, 242, 248)), // 연한 RoBIM 블루/그레이 대분류 헤더
+        HierarchyNodeType.Family => new SolidColorBrush(System.Windows.Media.Color.FromRgb(247, 248, 250)),   // 부드러운 패밀리 헤더
+        _ => Brushes.White                                                                                     // 순수 흰색 타입 행
+    };
+
+    public FontWeight NodeFontWeight => NodeType switch
+    {
+        HierarchyNodeType.Category => FontWeights.Bold,
+        HierarchyNodeType.Family => FontWeights.SemiBold,
+        _ => FontWeights.Normal
+    };
+
+    public double NodeFontSize => NodeType switch
+    {
+        HierarchyNodeType.Category => 12.5,
+        _ => 12.0
+    };
+
+    public string SubSummary => NodeType switch
+    {
+        HierarchyNodeType.Category => $"[{Children.Count}개 패밀리 / {InstanceCount:N0}개 요소]",
+        HierarchyNodeType.Family => $"[{Children.Count}개 타입 / {InstanceCount:N0}개 요소]",
+        _ => string.Empty
+    };
 
     public WorksetHierarchyNode? Parent { get; }
     public List<WorksetHierarchyNode> Children { get; } = new();
