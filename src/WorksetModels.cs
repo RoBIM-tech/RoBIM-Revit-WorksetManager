@@ -61,8 +61,18 @@ public sealed class WorksetHierarchyNode : INotifyPropertyChanged
     public Thickness IndentMargin => NodeType switch
     {
         HierarchyNodeType.Category => new Thickness(6, 0, 0, 0),
-        HierarchyNodeType.Family => new Thickness(22, 0, 0, 0),
-        _ => new Thickness(40, 0, 0, 0)
+        HierarchyNodeType.Family => new Thickness(14, 0, 0, 0),
+        _ => new Thickness(14, 0, 0, 0)
+    };
+
+    public bool IsLastSibling => Parent?.Children.LastOrDefault() == this;
+
+    public string TreeGuideText => NodeType switch
+    {
+        HierarchyNodeType.Category => string.Empty,
+        HierarchyNodeType.Family => IsLastSibling ? "└─ " : "├─ ",
+        HierarchyNodeType.Type => ((Parent?.IsLastSibling ?? false) ? "     " : "│   ") + (IsLastSibling ? "└─ " : "├─ "),
+        _ => string.Empty
     };
 
     public Brush RowBackground => NodeType switch

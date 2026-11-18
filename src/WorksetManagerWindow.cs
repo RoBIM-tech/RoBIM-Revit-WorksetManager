@@ -202,6 +202,15 @@ public sealed class WorksetManagerWindow : Window
         namePanelFactory.SetValue(StackPanel.OrientationProperty, Orientation.Horizontal);
         namePanelFactory.SetBinding(StackPanel.MarginProperty, new WpfBinding("IndentMargin"));
 
+        // 트리 가이드선 (├─, └─, │)
+        var guideFactory = new FrameworkElementFactory(typeof(TextBlock));
+        guideFactory.SetBinding(TextBlock.TextProperty, new WpfBinding("TreeGuideText"));
+        guideFactory.SetValue(TextBlock.ForegroundProperty, new SolidColorBrush(MediaColor.FromRgb(150, 165, 185))); // 은은한 가이드 라인 그레이
+        guideFactory.SetValue(TextBlock.FontFamilyProperty, new FontFamily("Consolas, 맑은 고딕"));
+        guideFactory.SetValue(TextBlock.FontSizeProperty, 11.5);
+        guideFactory.SetValue(TextBlock.VerticalAlignmentProperty, VerticalAlignment.Center);
+        namePanelFactory.AppendChild(guideFactory);
+
         // 토글 버튼 (▼ / ▶)
         var toggleBtnFactory = new FrameworkElementFactory(typeof(Button));
         toggleBtnFactory.SetBinding(Button.ContentProperty, new WpfBinding("ExpandSymbol"));
@@ -359,45 +368,10 @@ public sealed class WorksetManagerWindow : Window
         var row = GridColumnSelection.Ancestor<DataGridRow>(e.OriginalSource as DependencyObject);
         if (row?.DataContext is WorksetHierarchyNode node && node.HasChildren)
         {
-            if (node.IsExpanded)
-            {
-                CollapseNodeAndPromoteSelection(node);
-            }
-            else
-            {
-                node.IsExpanded = true;
-                RefreshDisplayedNodes();
-            }
+            node.IsExpanded = !node.IsExpanded;
+            RefreshDisplayedNodes(node);
             e.Handled = true;
         }
-    }
-
-    private void CollapseNodeAndPromoteSelection(WorksetHierarchyNode node)
-    {
-        if (!node.HasChildren) return;
-
-        var selectedList = _treeGrid.SelectedItems.Cast<WorksetHierarchyNode>().ToList();
-        bool hasChildSelected = selectedList.Any(s => IsDescendantOf(s, node));
-
-        node.IsExpanded = false;
-        RefreshDisplayedNodes();
-
-        if (hasChildSelected || _treeGrid.SelectedItem == null)
-        {
-            _treeGrid.SelectedItem = node;
-            _treeGrid.ScrollIntoView(node);
-        }
-    }
-
-    private static bool IsDescendantOf(WorksetHierarchyNode child, WorksetHierarchyNode ancestor)
-    {
-        var current = child.Parent;
-        while (current != null)
-        {
-            if (current == ancestor) return true;
-            current = current.Parent;
-        }
-        return false;
     }
 
     private void OnTreeGridPreviewKeyDown(object sender, KeyEventArgs e)
@@ -410,13 +384,12 @@ public sealed class WorksetManagerWindow : Window
             if (currentNode.HasChildren && !currentNode.IsExpanded)
             {
                 currentNode.IsExpanded = true;
-                RefreshDisplayedNodes();
+                RefreshDisplayedNodes(currentNode);
             }
             else if (currentNode.HasChildren && currentNode.IsExpanded && currentNode.Children.Count > 0)
             {
                 var firstChild = currentNode.Children[0];
-                _treeGrid.SelectedItem = firstChild;
-                _treeGrid.ScrollIntoView(firstChild);
+                SelectAndFocusNode(firstChild);
             }
         }
         else if (e.Key == Key.Left)
@@ -424,14 +397,29 @@ public sealed class WorksetManagerWindow : Window
             e.Handled = true; // 가로 셀 이동 완전 차단
             if (currentNode.HasChildren && currentNode.IsExpanded)
             {
-                CollapseNodeAndPromoteSelection(currentNode);
+                currentNode.IsExpanded = false;
+                RefreshDisplayedNodes(currentNode); // 접힌 부모 노드에 그대로 포커스 유지
             }
             else if (currentNode.Parent != null)
             {
-                _treeGrid.SelectedItem = currentNode.Parent;
-                _treeGrid.ScrollIntoView(currentNode.Parent);
+                SelectAndFocusNode(currentNode.Parent);
             }
         }
+    }
+
+    private void SelectAndFocusNode(WorksetHierarchyNode node)
+    {
+        _treeGrid.SelectedItem = node;
+        _treeGrid.ScrollIntoView(node);
+        _treeGrid.CurrentCell = new DataGridCellInfo(node, _treeGrid.Columns[0]);
+        Dispatcher.BeginInvoke(new Action(() =>
+        {
+            _treeGrid.Focus();
+            if (_treeGrid.ItemContainerGenerator.ContainerFromItem(node) is DataGridRow row)
+            {
+                row.Focus();
+            }
+        }), System.Windows.Threading.DispatcherPriority.Input);
     }
 
     private void OnWorksetComboSelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -486,15 +474,8 @@ public sealed class WorksetManagerWindow : Window
     {
         if (sender is Button btn && btn.DataContext is WorksetHierarchyNode node && node.HasChildren)
         {
-            if (node.IsExpanded)
-            {
-                CollapseNodeAndPromoteSelection(node);
-            }
-            else
-            {
-                node.IsExpanded = true;
-                RefreshDisplayedNodes();
-            }
+            node.IsExpanded = !node.IsExpanded;
+            RefreshDisplayedNodes(node);
         }
     }
 
@@ -590,11 +571,27 @@ public sealed class WorksetManagerWindow : Window
         }
     }
 
-    private void RefreshDisplayedNodes()
+    private void RefreshDisplayedNodes(WorksetHierarchyNode? preferredTarget = null)
     {
+        // 1. 유지할 타겟 노드 결정 (선택된 노드가 접혀 숨겨지면 가장 가까운 보이는 조상으로 승격)
+        var currentSelected = preferredTarget ?? _treeGrid?.SelectedItem as WorksetHierarchyNode;
+        WorksetHierarchyNode? targetToRestore = null;
+
+        bool includeCad = _includeCadCheckBox?.IsChecked == true;
+
+        if (currentSelected != null)
+        {
+            var probe = currentSelected;
+            while (probe != null && (!IsVisibleInTree(probe) || (!includeCad && probe.IsCad)))
+            {
+                probe = probe.Parent;
+            }
+            targetToRestore = probe;
+        }
+
+        // 2. 컬렉션 갱신
         _displayedNodes.Clear();
         var filter = _searchBox?.Text?.Trim() ?? string.Empty;
-        bool includeCad = _includeCadCheckBox?.IsChecked == true;
 
         bool MatchesFilter(WorksetHierarchyNode node)
         {
@@ -627,7 +624,24 @@ public sealed class WorksetManagerWindow : Window
             AddVisibleNodes(root, isFiltering);
         }
 
+        // 3. 선택 및 키보드 포커스 완전 복원 (다음 키보드 조작이 즉시 이어지도록 보장)
+        if (targetToRestore != null && _displayedNodes.Contains(targetToRestore) && _treeGrid != null)
+        {
+            SelectAndFocusNode(targetToRestore);
+        }
+
         UpdateSummary();
+    }
+
+    private static bool IsVisibleInTree(WorksetHierarchyNode node)
+    {
+        var p = node.Parent;
+        while (p != null)
+        {
+            if (!p.IsExpanded) return false;
+            p = p.Parent;
+        }
+        return true;
     }
 
     private void UpdateSummary()
