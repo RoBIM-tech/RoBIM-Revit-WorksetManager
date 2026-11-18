@@ -91,11 +91,12 @@ public static class WorksetCollector
                 }
             }
             string typeName = elementType.Name;
+            bool isCad = IsCadCategory(category);
 
             // 1단계: 카테고리 노드
             if (!categoriesMap.TryGetValue(categoryName, out var catNode))
             {
-                catNode = new WorksetHierarchyNode(HierarchyNodeType.Category, categoryName, 0, null);
+                catNode = new WorksetHierarchyNode(HierarchyNodeType.Category, categoryName, 0, null, isCad: isCad);
                 categoriesMap[categoryName] = catNode;
             }
 
@@ -147,6 +148,17 @@ public static class WorksetCollector
             .OrderBy(c => c.IsGroup ? 1 : 0)
             .ThenBy(c => c.Name, StringComparer.CurrentCultureIgnoreCase)
             .ToList();
+    }
+
+    public static bool IsCadCategory(Category category)
+    {
+        if (category == null) return false;
+        string name = category.Name;
+        if (string.IsNullOrEmpty(name)) return false;
+        return name.EndsWith(".dwg", StringComparison.OrdinalIgnoreCase)
+            || name.EndsWith(".dxf", StringComparison.OrdinalIgnoreCase)
+            || name.EndsWith(".dgn", StringComparison.OrdinalIgnoreCase)
+            || name.EndsWith(".sat", StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool IsExcludedCategory(Category category)

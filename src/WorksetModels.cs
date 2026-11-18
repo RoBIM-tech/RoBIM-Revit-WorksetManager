@@ -99,6 +99,7 @@ public sealed class WorksetHierarchyNode : INotifyPropertyChanged
     public List<ElementId> InstanceIds { get; } = new();
     public ElementId? ElementTypeId { get; set; }
     public bool IsGroup { get; }
+    public bool IsCad { get; }
 
     public int InstanceCount => NodeType == HierarchyNodeType.Type
         ? InstanceIds.Count
@@ -109,8 +110,8 @@ public sealed class WorksetHierarchyNode : INotifyPropertyChanged
 
     public string IconSymbol => NodeType switch
     {
-        HierarchyNodeType.Category => "🏷️",
-        HierarchyNodeType.Family => IsGroup ? "📦" : "📁",
+        HierarchyNodeType.Category => IsCad ? "📐" : "🏷️",
+        HierarchyNodeType.Family => IsGroup ? "📦" : (IsCad ? "📐" : "📁"),
         HierarchyNodeType.Type => "📄",
         _ => "▪"
     };
@@ -168,17 +169,63 @@ public sealed class WorksetHierarchyNode : INotifyPropertyChanged
                 OnPropertyChanged(nameof(IsModified));
                 OnPropertyChanged(nameof(StatusDescription));
 
-                // 상위(카테고리/패밀리)에서 작업세트 변경 시 하위 모든 자식 노드 자동 연동
-                if (value != null && !value.IsSpecial)
+                // 상위(카테고리/패밀리)에서 작업세트 직접 변경 시 하위 모든 자식 노드 자동 연동
+                if (NodeType != HierarchyNodeType.Type && value != null && !value.IsSpecial)
                 {
                     foreach (var child in Children)
                     {
-                        child.SelectedWorkset = value;
+                        child.SetWorksetFromParent(value);
                     }
                 }
+
+                // 상위 부모 노드의 집계 상태 재계산
+                Parent?.RecomputeAggregatedWorkset();
                 NotifyModified();
             }
         }
+    }
+
+    public void SetWorksetFromParent(WorksetInfo newWorkset)
+    {
+        _selectedWorkset = newWorkset;
+        OnPropertyChanged(nameof(SelectedWorkset));
+        OnPropertyChanged(nameof(IsModified));
+        OnPropertyChanged(nameof(StatusDescription));
+
+        if (NodeType != HierarchyNodeType.Type)
+        {
+            foreach (var child in Children)
+            {
+                child.SetWorksetFromParent(newWorkset);
+            }
+        }
+    }
+
+    public void RecomputeAggregatedWorkset()
+    {
+        if (NodeType == HierarchyNodeType.Type) return;
+
+        // 하위 모든 유효 작업세트 검사
+        var childWorksets = Children
+            .Select(c => c.SelectedWorkset)
+            .Where(w => w != null && !w.IsSpecial)
+            .Distinct()
+            .ToList();
+
+        if (childWorksets.Count == 1 && Children.All(c => c.SelectedWorkset != null && !c.SelectedWorkset.IsSpecial))
+        {
+            _selectedWorkset = childWorksets[0];
+        }
+        else
+        {
+            _selectedWorkset = WorksetInfo.Mixed;
+        }
+
+        OnPropertyChanged(nameof(SelectedWorkset));
+        OnPropertyChanged(nameof(IsModified));
+        OnPropertyChanged(nameof(StatusDescription));
+
+        Parent?.RecomputeAggregatedWorkset();
     }
 
     public bool IsModified => NodeType == HierarchyNodeType.Type
@@ -192,11 +239,11 @@ public sealed class WorksetHierarchyNode : INotifyPropertyChanged
             if (NodeType != HierarchyNodeType.Type)
             {
                 int modCount = GetModifiedTypeCount();
-                return modCount > 0 ? $"{modCount}개 변경예정" : "유지";
+                return modCount > 0 ? $"→ {modCount}개 변경예정" : "-";
             }
 
-            if (SelectedWorkset == null || Equals(SelectedWorkset, InitialWorkset)) return "동일";
-            return $"-> {SelectedWorkset.Name}";
+            if (SelectedWorkset == null || Equals(SelectedWorkset, InitialWorkset)) return "-";
+            return $"→ {SelectedWorkset.Name}";
         }
     }
 
@@ -205,13 +252,15 @@ public sealed class WorksetHierarchyNode : INotifyPropertyChanged
         string name,
         int level,
         WorksetHierarchyNode? parent,
-        bool isGroup = false)
+        bool isGroup = false,
+        bool isCad = false)
     {
         NodeType = nodeType;
         Name = name;
         Level = level;
         Parent = parent;
         IsGroup = isGroup;
+        IsCad = isCad || (parent?.IsCad ?? false);
         _isExpanded = true; // 기본적으로 펼침 상태
         InitialWorkset = WorksetInfo.Unplaced;
         _selectedWorkset = WorksetInfo.Unplaced;

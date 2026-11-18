@@ -28,6 +28,7 @@ public sealed class WorksetManagerWindow : Window
 
     private readonly ObservableCollection<WorksetHierarchyNode> _displayedNodes = new();
     private readonly WpfTextBox _searchBox;
+    private readonly CheckBox _includeCadCheckBox;
 
     private readonly DataGrid _treeGrid;
     private readonly TextBlock _summaryLabel;
@@ -128,6 +129,19 @@ public sealed class WorksetManagerWindow : Window
         };
         btnCollapseAll.Click += (s, e) => SetAllExpanded(false);
         expandCollapsePanel.Children.Add(btnCollapseAll);
+
+        _includeCadCheckBox = new CheckBox
+        {
+            Content = "CAD(.dwg) 포함",
+            IsChecked = false, // 기본적으로 CAD 숨김
+            VerticalAlignment = VerticalAlignment.Center,
+            FontWeight = FontWeights.SemiBold,
+            Margin = new Thickness(16, 0, 0, 0),
+            Cursor = Cursors.Hand
+        };
+        _includeCadCheckBox.Checked += (s, e) => RefreshDisplayedNodes();
+        _includeCadCheckBox.Unchecked += (s, e) => RefreshDisplayedNodes();
+        expandCollapsePanel.Children.Add(_includeCadCheckBox);
 
         WpfGrid.SetColumn(expandCollapsePanel, 2);
         toolbarGrid.Children.Add(expandCollapsePanel);
@@ -345,10 +359,45 @@ public sealed class WorksetManagerWindow : Window
         var row = GridColumnSelection.Ancestor<DataGridRow>(e.OriginalSource as DependencyObject);
         if (row?.DataContext is WorksetHierarchyNode node && node.HasChildren)
         {
-            node.IsExpanded = !node.IsExpanded;
-            RefreshDisplayedNodes();
+            if (node.IsExpanded)
+            {
+                CollapseNodeAndPromoteSelection(node);
+            }
+            else
+            {
+                node.IsExpanded = true;
+                RefreshDisplayedNodes();
+            }
             e.Handled = true;
         }
+    }
+
+    private void CollapseNodeAndPromoteSelection(WorksetHierarchyNode node)
+    {
+        if (!node.HasChildren) return;
+
+        var selectedList = _treeGrid.SelectedItems.Cast<WorksetHierarchyNode>().ToList();
+        bool hasChildSelected = selectedList.Any(s => IsDescendantOf(s, node));
+
+        node.IsExpanded = false;
+        RefreshDisplayedNodes();
+
+        if (hasChildSelected || _treeGrid.SelectedItem == null)
+        {
+            _treeGrid.SelectedItem = node;
+            _treeGrid.ScrollIntoView(node);
+        }
+    }
+
+    private static bool IsDescendantOf(WorksetHierarchyNode child, WorksetHierarchyNode ancestor)
+    {
+        var current = child.Parent;
+        while (current != null)
+        {
+            if (current == ancestor) return true;
+            current = current.Parent;
+        }
+        return false;
     }
 
     private void OnTreeGridPreviewKeyDown(object sender, KeyEventArgs e)
@@ -357,26 +406,30 @@ public sealed class WorksetManagerWindow : Window
 
         if (e.Key == Key.Right)
         {
+            e.Handled = true; // 가로 셀 이동 완전 차단
             if (currentNode.HasChildren && !currentNode.IsExpanded)
             {
                 currentNode.IsExpanded = true;
                 RefreshDisplayedNodes();
-                e.Handled = true;
+            }
+            else if (currentNode.HasChildren && currentNode.IsExpanded && currentNode.Children.Count > 0)
+            {
+                var firstChild = currentNode.Children[0];
+                _treeGrid.SelectedItem = firstChild;
+                _treeGrid.ScrollIntoView(firstChild);
             }
         }
         else if (e.Key == Key.Left)
         {
+            e.Handled = true; // 가로 셀 이동 완전 차단
             if (currentNode.HasChildren && currentNode.IsExpanded)
             {
-                currentNode.IsExpanded = false;
-                RefreshDisplayedNodes();
-                e.Handled = true;
+                CollapseNodeAndPromoteSelection(currentNode);
             }
             else if (currentNode.Parent != null)
             {
                 _treeGrid.SelectedItem = currentNode.Parent;
                 _treeGrid.ScrollIntoView(currentNode.Parent);
-                e.Handled = true;
             }
         }
     }
@@ -408,10 +461,11 @@ public sealed class WorksetManagerWindow : Window
                     tNode.SelectedWorkset = targetWorkset;
                 }
 
-                // 상위 노드들 상태 갱신
-                foreach (var sNode in selectedNodes)
+                // 상위 부모 노드들의 집계 작업세트 자동 재계산 및 드롭다운 갱신
+                var parentsToUpdate = typeNodes.Select(t => t.Parent).Where(p => p != null).Distinct().ToList();
+                foreach (var parent in parentsToUpdate)
                 {
-                    sNode.NotifyModified();
+                    parent!.RecomputeAggregatedWorkset();
                 }
             }
             finally
@@ -421,15 +475,24 @@ public sealed class WorksetManagerWindow : Window
 
             UpdateSummary();
         }
+        else
+        {
+            triggerNode.Parent?.RecomputeAggregatedWorkset();
+            UpdateSummary();
+        }
     }
 
     private void OnToggleExpandClicked(object sender, RoutedEventArgs e)
     {
-        if (sender is Button btn && btn.DataContext is WorksetHierarchyNode node)
+        if (sender is Button btn && btn.DataContext is WorksetHierarchyNode node && node.HasChildren)
         {
-            if (node.HasChildren)
+            if (node.IsExpanded)
             {
-                node.IsExpanded = !node.IsExpanded;
+                CollapseNodeAndPromoteSelection(node);
+            }
+            else
+            {
+                node.IsExpanded = true;
                 RefreshDisplayedNodes();
             }
         }
@@ -531,6 +594,7 @@ public sealed class WorksetManagerWindow : Window
     {
         _displayedNodes.Clear();
         var filter = _searchBox?.Text?.Trim() ?? string.Empty;
+        bool includeCad = _includeCadCheckBox?.IsChecked == true;
 
         bool MatchesFilter(WorksetHierarchyNode node)
         {
@@ -541,6 +605,7 @@ public sealed class WorksetManagerWindow : Window
 
         void AddVisibleNodes(WorksetHierarchyNode node, bool isFiltered)
         {
+            if (!includeCad && node.IsCad) return;
             if (isFiltered && !MatchesFilter(node)) return;
 
             _displayedNodes.Add(node);
@@ -558,6 +623,7 @@ public sealed class WorksetManagerWindow : Window
         bool isFiltering = !string.IsNullOrEmpty(filter);
         foreach (var root in _allRoots)
         {
+            if (!includeCad && root.IsCad) continue;
             AddVisibleNodes(root, isFiltering);
         }
 
@@ -566,7 +632,9 @@ public sealed class WorksetManagerWindow : Window
 
     private void UpdateSummary()
     {
-        var allTypes = GetAllTypeNodes(_allRoots).ToList();
+        bool includeCad = _includeCadCheckBox?.IsChecked == true;
+        var activeRoots = _allRoots.Where(r => includeCad || !r.IsCad).ToList();
+        var allTypes = GetAllTypeNodes(activeRoots).ToList();
         int totalTypes = allTypes.Count;
         int totalInstances = allTypes.Sum(t => t.InstanceCount);
 
@@ -577,7 +645,7 @@ public sealed class WorksetManagerWindow : Window
         int selectedCount = _treeGrid?.SelectedItems.Count ?? 0;
         string selectionText = selectedCount > 0 ? $"선택: {selectedCount}개 행 | " : string.Empty;
 
-        _summaryLabel.Text = $"{selectionText}카테고리: {_allRoots.Count}개 | 전체: {totalTypes}개 타입 ({totalInstances:N0}개 요소) | 변경 예정: {modTypeCount}개 타입 ({modInstanceCount:N0}개 요소)";
+        _summaryLabel.Text = $"{selectionText}카테고리: {activeRoots.Count}개 | 전체: {totalTypes}개 타입 ({totalInstances:N0}개 요소) | 변경 예정: {modTypeCount}개 타입 ({modInstanceCount:N0}개 요소)";
     }
 
     private void OnApplyClicked(object sender, RoutedEventArgs e)
