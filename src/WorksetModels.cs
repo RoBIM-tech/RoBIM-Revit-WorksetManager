@@ -58,29 +58,9 @@ public sealed class WorksetHierarchyNode : INotifyPropertyChanged
     public string Name { get; }
     public int Level { get; }
 
-    public Thickness IndentMargin => NodeType switch
-    {
-        HierarchyNodeType.Category => new Thickness(6, 0, 0, 0),
-        HierarchyNodeType.Family => new Thickness(14, 0, 0, 0),
-        _ => new Thickness(14, 0, 0, 0)
-    };
-
     public bool IsLastSibling => Parent?.Children.LastOrDefault() == this;
 
-    public string TreeGuideText => NodeType switch
-    {
-        HierarchyNodeType.Category => string.Empty,
-        HierarchyNodeType.Family => IsLastSibling ? "└─ " : "├─ ",
-        HierarchyNodeType.Type => ((Parent?.IsLastSibling ?? false) ? "     " : "│   ") + (IsLastSibling ? "└─ " : "├─ "),
-        _ => string.Empty
-    };
-
-    public Brush RowBackground => NodeType switch
-    {
-        HierarchyNodeType.Category => new SolidColorBrush(System.Windows.Media.Color.FromRgb(238, 242, 248)), // 연한 RoBIM 블루/그레이 대분류 헤더
-        HierarchyNodeType.Family => new SolidColorBrush(System.Windows.Media.Color.FromRgb(247, 248, 250)),   // 부드러운 패밀리 헤더
-        _ => Brushes.White                                                                                     // 순수 흰색 타입 행
-    };
+    public Brush RowBackground => Brushes.White;
 
     public FontWeight NodeFontWeight => NodeType switch
     {
@@ -89,11 +69,7 @@ public sealed class WorksetHierarchyNode : INotifyPropertyChanged
         _ => FontWeights.Normal
     };
 
-    public double NodeFontSize => NodeType switch
-    {
-        HierarchyNodeType.Category => 12.5,
-        _ => 12.0
-    };
+    public double NodeFontSize => 12.0;
 
     public string SubSummary => NodeType switch
     {

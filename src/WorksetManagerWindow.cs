@@ -45,13 +45,13 @@ public sealed class WorksetManagerWindow : Window
         var version = Assembly.GetExecutingAssembly()
             .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion.Split('+')[0]
             ?? Assembly.GetExecutingAssembly().GetName().Version?.ToString(3)
-            ?? "0.1.0-test.5";
+            ?? "0.1.0-test.8";
         Title = $"타입별 작업 세트 관리 · {version} · TEST";
 
-        Width = 1120;
-        Height = 740;
-        MinWidth = 920;
-        MinHeight = 560;
+        Width = 1080;
+        Height = 720;
+        MinWidth = 880;
+        MinHeight = 520;
         WindowStartupLocation = WindowStartupLocation.CenterScreen;
         RoBimTheme.Apply(this);
 
@@ -70,23 +70,23 @@ public sealed class WorksetManagerWindow : Window
         root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) }); // 1: TreeGrid
         root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto }); // 2: Footer
 
-        // ----------------- Row 0: 상단 툴바 (검색 및 전체 펼침/접힘만 심플하게 유지) -----------------
+        // ----------------- Row 0: 상단 툴바 -----------------
         var toolbarPanel = new Border
         {
-            Padding = new Thickness(8),
-            Margin = new Thickness(0, 0, 0, 10),
+            Padding = new Thickness(8, 6, 8, 6),
+            Margin = new Thickness(0, 0, 0, 8),
             Background = SystemColors.ControlLightLightBrush,
-            BorderBrush = SystemColors.ActiveBorderBrush,
+            BorderBrush = new SolidColorBrush(MediaColor.FromRgb(200, 200, 200)),
             BorderThickness = new Thickness(1),
-            CornerRadius = new CornerRadius(4)
+            CornerRadius = new CornerRadius(3)
         };
 
         var toolbarGrid = new WpfGrid();
         toolbarGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto }); // 검색 라벨
-        toolbarGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(280) }); // 검색창
-        toolbarGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto }); // 펼치기/접기 버튼들
+        toolbarGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(260) }); // 검색창
+        toolbarGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto }); // 펼치기/접기/CAD체크
         toolbarGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) }); // 여백
-        toolbarGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto }); // 안내 팁
+        toolbarGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto }); // 우측 팁
 
         var searchLabel = new TextBlock
         {
@@ -101,34 +101,34 @@ public sealed class WorksetManagerWindow : Window
         _searchBox = new WpfTextBox
         {
             VerticalAlignment = VerticalAlignment.Center,
-            Padding = new Thickness(6, 3, 6, 3)
+            Padding = new Thickness(4, 2, 4, 2)
         };
         _searchBox.TextChanged += (s, e) => RefreshDisplayedNodes();
         WpfGrid.SetColumn(_searchBox, 1);
         toolbarGrid.Children.Add(_searchBox);
 
-        var expandCollapsePanel = new StackPanel
+        var buttonGroupPanel = new StackPanel
         {
             Orientation = Orientation.Horizontal,
-            Margin = new Thickness(14, 0, 0, 0)
+            Margin = new Thickness(12, 0, 0, 0)
         };
 
         var btnExpandAll = new Button
         {
             Content = "모두 펼치기",
-            Padding = new Thickness(10, 4, 10, 4),
-            Margin = new Thickness(0, 0, 6, 0)
+            Padding = new Thickness(8, 3, 8, 3),
+            Margin = new Thickness(0, 0, 4, 0)
         };
         btnExpandAll.Click += (s, e) => SetAllExpanded(true);
-        expandCollapsePanel.Children.Add(btnExpandAll);
+        buttonGroupPanel.Children.Add(btnExpandAll);
 
         var btnCollapseAll = new Button
         {
             Content = "모두 접기",
-            Padding = new Thickness(10, 4, 10, 4)
+            Padding = new Thickness(8, 3, 8, 3)
         };
         btnCollapseAll.Click += (s, e) => SetAllExpanded(false);
-        expandCollapsePanel.Children.Add(btnCollapseAll);
+        buttonGroupPanel.Children.Add(btnCollapseAll);
 
         _includeCadCheckBox = new CheckBox
         {
@@ -136,23 +136,22 @@ public sealed class WorksetManagerWindow : Window
             IsChecked = false, // 기본적으로 CAD 숨김
             VerticalAlignment = VerticalAlignment.Center,
             FontWeight = FontWeights.SemiBold,
-            Margin = new Thickness(16, 0, 0, 0),
+            Margin = new Thickness(14, 0, 0, 0),
             Cursor = Cursors.Hand
         };
         _includeCadCheckBox.Checked += (s, e) => RefreshDisplayedNodes();
         _includeCadCheckBox.Unchecked += (s, e) => RefreshDisplayedNodes();
-        expandCollapsePanel.Children.Add(_includeCadCheckBox);
+        buttonGroupPanel.Children.Add(_includeCadCheckBox);
 
-        WpfGrid.SetColumn(expandCollapsePanel, 2);
-        toolbarGrid.Children.Add(expandCollapsePanel);
+        WpfGrid.SetColumn(buttonGroupPanel, 2);
+        toolbarGrid.Children.Add(buttonGroupPanel);
 
-        // 우측 안내 팁 (Revit VV/VG 안내)
         var tipText = new TextBlock
         {
-            Text = "💡 Tip: 여러 행을 선택(Shift/Ctrl)한 상태에서 드롭다운을 바꾸면 선택 항목이 일괄 변경됩니다.",
+            Text = "💡 다중 선택(Shift/Ctrl) 후 드롭다운을 변경하면 선택 항목이 일괄 변경됩니다.",
             VerticalAlignment = VerticalAlignment.Center,
             Foreground = SystemColors.GrayTextBrush,
-            FontSize = 11.5
+            FontSize = 11.0
         };
         WpfGrid.SetColumn(tipText, 4);
         toolbarGrid.Children.Add(tipText);
@@ -161,7 +160,7 @@ public sealed class WorksetManagerWindow : Window
         WpfGrid.SetRow(toolbarPanel, 0);
         root.Children.Add(toolbarPanel);
 
-        // ----------------- Row 1: 단일 계층 Tree-Grid (체크박스 제거, 계층 시각화 강화) -----------------
+        // ----------------- Row 1: Revit VV/VG 완벽 일치 Tree-Grid -----------------
         _treeGrid = new DataGrid
         {
             AutoGenerateColumns = false,
@@ -172,11 +171,14 @@ public sealed class WorksetManagerWindow : Window
             HeadersVisibility = DataGridHeadersVisibility.Column,
             SelectionMode = DataGridSelectionMode.Extended,
             SelectionUnit = DataGridSelectionUnit.FullRow,
-            GridLinesVisibility = DataGridGridLinesVisibility.Horizontal,
-            HorizontalGridLinesBrush = new SolidColorBrush(MediaColor.FromRgb(225, 230, 235)),
+            GridLinesVisibility = DataGridGridLinesVisibility.All,
+            HorizontalGridLinesBrush = new SolidColorBrush(MediaColor.FromRgb(215, 215, 215)),
+            VerticalGridLinesBrush = new SolidColorBrush(MediaColor.FromRgb(215, 215, 215)),
+            RowHeight = 22, // Revit VV/VG 컴팩트 표준 행 높이 (22px)
             ItemsSource = _displayedNodes,
-            BorderBrush = SystemColors.ActiveBorderBrush,
-            BorderThickness = new Thickness(1)
+            BorderBrush = new SolidColorBrush(MediaColor.FromRgb(170, 170, 170)),
+            BorderThickness = new Thickness(1),
+            Background = Brushes.White
         };
 
         _treeGrid.Sorting += OnTreeGridSorting;
@@ -184,15 +186,15 @@ public sealed class WorksetManagerWindow : Window
         _treeGrid.MouseDoubleClick += OnGridMouseDoubleClick;
         _treeGrid.SelectionChanged += (s, e) => UpdateSummary();
 
-        // DataGridRow 스타일 (계층별 배경색 밴딩)
+        // DataGridRow 스타일 (순수 흰색 바탕, 선택 시 파란색 하이라이트)
         var rowStyle = new Style(typeof(DataGridRow));
-        rowStyle.Setters.Add(new Setter(DataGridRow.BackgroundProperty, new WpfBinding("RowBackground")));
+        rowStyle.Setters.Add(new Setter(DataGridRow.BackgroundProperty, Brushes.White));
         _treeGrid.RowStyle = rowStyle;
 
-        // 1) 이름 열 (프로젝트 브라우저 스타일 계층 트리: 인덴트 + 토글 심볼 + 아이콘 + 이름 + 요약 배지)
+        // 1) 카테고리 / 패밀리 / 타입 이름 열 (TreeLineControl + 아이콘 + 텍스트)
         var nameCol = new DataGridTemplateColumn
         {
-            Header = "이름 (프로젝트 브라우저 트리)",
+            Header = "카테고리 / 패밀리 / 타입",
             Width = new DataGridLength(1, DataGridLengthUnitType.Star),
             SortMemberPath = "Name"
         };
@@ -200,48 +202,38 @@ public sealed class WorksetManagerWindow : Window
 
         var namePanelFactory = new FrameworkElementFactory(typeof(StackPanel));
         namePanelFactory.SetValue(StackPanel.OrientationProperty, Orientation.Horizontal);
-        namePanelFactory.SetBinding(StackPanel.MarginProperty, new WpfBinding("IndentMargin"));
+        namePanelFactory.SetValue(StackPanel.VerticalAlignmentProperty, VerticalAlignment.Center);
+        namePanelFactory.SetValue(StackPanel.HeightProperty, 22.0);
 
-        // 트리 가이드선 (├─, └─, │)
-        var guideFactory = new FrameworkElementFactory(typeof(TextBlock));
-        guideFactory.SetBinding(TextBlock.TextProperty, new WpfBinding("TreeGuideText"));
-        guideFactory.SetValue(TextBlock.ForegroundProperty, new SolidColorBrush(MediaColor.FromRgb(150, 165, 185))); // 은은한 가이드 라인 그레이
-        guideFactory.SetValue(TextBlock.FontFamilyProperty, new FontFamily("Consolas, 맑은 고딕"));
-        guideFactory.SetValue(TextBlock.FontSizeProperty, 11.5);
-        guideFactory.SetValue(TextBlock.VerticalAlignmentProperty, VerticalAlignment.Center);
-        namePanelFactory.AppendChild(guideFactory);
-
-        // 토글 버튼 (▼ / ▶)
-        var toggleBtnFactory = new FrameworkElementFactory(typeof(Button));
-        toggleBtnFactory.SetBinding(Button.ContentProperty, new WpfBinding("ExpandSymbol"));
-        toggleBtnFactory.SetValue(Button.BackgroundProperty, Brushes.Transparent);
-        toggleBtnFactory.SetValue(Button.BorderThicknessProperty, new Thickness(0));
-        toggleBtnFactory.SetValue(Button.PaddingProperty, new Thickness(2, 0, 4, 0));
-        toggleBtnFactory.SetValue(Button.CursorProperty, Cursors.Hand);
-        toggleBtnFactory.AddHandler(Button.ClickEvent, new RoutedEventHandler(OnToggleExpandClicked));
-        namePanelFactory.AppendChild(toggleBtnFactory);
+        // Revit VV/VG 완벽 점선 및 [+/-] 박스 렌더링 컨트롤
+        var treeLineFactory = new FrameworkElementFactory(typeof(TreeLineControl));
+        treeLineFactory.SetBinding(TreeLineControl.NodeProperty, new WpfBinding());
+        treeLineFactory.SetValue(TreeLineControl.VerticalAlignmentProperty, VerticalAlignment.Stretch);
+        treeLineFactory.AddHandler(UIElement.MouseLeftButtonDownEvent, new MouseButtonEventHandler(OnTreeLineClicked));
+        namePanelFactory.AppendChild(treeLineFactory);
 
         // 아이콘 심볼
         var iconFactory = new FrameworkElementFactory(typeof(TextBlock));
         iconFactory.SetBinding(TextBlock.TextProperty, new WpfBinding("IconSymbol"));
-        iconFactory.SetValue(TextBlock.MarginProperty, new Thickness(0, 0, 6, 0));
+        iconFactory.SetValue(TextBlock.MarginProperty, new Thickness(2, 0, 4, 0));
         iconFactory.SetValue(TextBlock.VerticalAlignmentProperty, VerticalAlignment.Center);
+        iconFactory.SetValue(TextBlock.FontSizeProperty, 11.5);
         namePanelFactory.AppendChild(iconFactory);
 
-        // 이름 텍스트 (위계별 굵기 및 크기 차등)
+        // 이름 텍스트
         var nameTextFactory = new FrameworkElementFactory(typeof(TextBlock));
         nameTextFactory.SetBinding(TextBlock.TextProperty, new WpfBinding("Name"));
         nameTextFactory.SetBinding(TextBlock.FontWeightProperty, new WpfBinding("NodeFontWeight"));
-        nameTextFactory.SetBinding(TextBlock.FontSizeProperty, new WpfBinding("NodeFontSize"));
+        nameTextFactory.SetValue(TextBlock.FontSizeProperty, 11.5);
         nameTextFactory.SetValue(TextBlock.VerticalAlignmentProperty, VerticalAlignment.Center);
         namePanelFactory.AppendChild(nameTextFactory);
 
-        // 서브 요약 배지 (예: [12개 패밀리 / 48개 요소])
+        // 서브 요약 배지
         var subBadgeFactory = new FrameworkElementFactory(typeof(TextBlock));
         subBadgeFactory.SetBinding(TextBlock.TextProperty, new WpfBinding("SubSummary"));
-        subBadgeFactory.SetValue(TextBlock.ForegroundProperty, new SolidColorBrush(MediaColor.FromRgb(108, 117, 125)));
-        subBadgeFactory.SetValue(TextBlock.FontSizeProperty, 11.0);
-        subBadgeFactory.SetValue(TextBlock.MarginProperty, new Thickness(8, 0, 0, 0));
+        subBadgeFactory.SetValue(TextBlock.ForegroundProperty, new SolidColorBrush(MediaColor.FromRgb(128, 128, 128)));
+        subBadgeFactory.SetValue(TextBlock.FontSizeProperty, 10.5);
+        subBadgeFactory.SetValue(TextBlock.MarginProperty, new Thickness(6, 0, 0, 0));
         subBadgeFactory.SetValue(TextBlock.VerticalAlignmentProperty, VerticalAlignment.Center);
         namePanelFactory.AppendChild(subBadgeFactory);
 
@@ -252,7 +244,7 @@ public sealed class WorksetManagerWindow : Window
         var countCol = new DataGridTextColumn
         {
             Header = "요소 수",
-            Width = 90,
+            Width = 75,
             Binding = new WpfBinding("InstanceCount"),
             SortMemberPath = "InstanceCount",
             ElementStyle = new Style(typeof(TextBlock))
@@ -261,17 +253,18 @@ public sealed class WorksetManagerWindow : Window
                 {
                     new Setter(TextBlock.TextAlignmentProperty, TextAlignment.Right),
                     new Setter(TextBlock.VerticalAlignmentProperty, VerticalAlignment.Center),
-                    new Setter(TextBlock.MarginProperty, new Thickness(0, 0, 10, 0))
+                    new Setter(TextBlock.MarginProperty, new Thickness(0, 0, 6, 0)),
+                    new Setter(TextBlock.FontSizeProperty, 11.5)
                 }
             }
         };
         _treeGrid.Columns.Add(countCol);
 
-        // 3) 작업 세트 드롭다운 열 (VV/VG 다중 편집 지원)
+        // 3) 작업 세트 드롭다운 열 (VV/VG 컴팩트 콤보박스)
         var worksetCol = new DataGridTemplateColumn
         {
             Header = "작업 세트",
-            Width = 240,
+            Width = 220,
             CanUserSort = false
         };
         var comboFactory = new FrameworkElementFactory(typeof(ComboBox));
@@ -283,7 +276,10 @@ public sealed class WorksetManagerWindow : Window
         });
         comboFactory.SetValue(ComboBox.DisplayMemberPathProperty, "Name");
         comboFactory.SetValue(ComboBox.VerticalAlignmentProperty, VerticalAlignment.Center);
-        comboFactory.SetValue(ComboBox.MarginProperty, new Thickness(4, 2, 4, 2));
+        comboFactory.SetValue(ComboBox.HeightProperty, 20.0);
+        comboFactory.SetValue(ComboBox.FontSizeProperty, 11.0);
+        comboFactory.SetValue(ComboBox.PaddingProperty, new Thickness(3, 0, 3, 0));
+        comboFactory.SetValue(ComboBox.MarginProperty, new Thickness(2, 0, 2, 0));
         comboFactory.AddHandler(ComboBox.SelectionChangedEvent, new SelectionChangedEventHandler(OnWorksetComboSelectionChanged));
         worksetCol.CellTemplate = new DataTemplate { VisualTree = comboFactory };
         _treeGrid.Columns.Add(worksetCol);
@@ -292,7 +288,7 @@ public sealed class WorksetManagerWindow : Window
         var statusCol = new DataGridTextColumn
         {
             Header = "상태",
-            Width = 140,
+            Width = 120,
             Binding = new WpfBinding("StatusDescription"),
             CanUserSort = false,
             ElementStyle = new Style(typeof(TextBlock))
@@ -300,7 +296,8 @@ public sealed class WorksetManagerWindow : Window
                 Setters =
                 {
                     new Setter(TextBlock.VerticalAlignmentProperty, VerticalAlignment.Center),
-                    new Setter(TextBlock.MarginProperty, new Thickness(6, 0, 6, 0))
+                    new Setter(TextBlock.MarginProperty, new Thickness(4, 0, 4, 0)),
+                    new Setter(TextBlock.FontSizeProperty, 11.0)
                 }
             }
         };
@@ -313,14 +310,15 @@ public sealed class WorksetManagerWindow : Window
         root.Children.Add(_treeGrid);
 
         // ----------------- Row 2: 하단 요약 및 실행 버튼 바 -----------------
-        var footerGrid = new WpfGrid { Margin = new Thickness(0, 12, 0, 0) };
+        var footerGrid = new WpfGrid { Margin = new Thickness(0, 8, 0, 0) };
         footerGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         footerGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
 
         _summaryLabel = new TextBlock
         {
             VerticalAlignment = VerticalAlignment.Center,
-            FontWeight = FontWeights.SemiBold
+            FontWeight = FontWeights.SemiBold,
+            FontSize = 11.5
         };
         WpfGrid.SetColumn(_summaryLabel, 0);
         footerGrid.Children.Add(_summaryLabel);
@@ -334,8 +332,8 @@ public sealed class WorksetManagerWindow : Window
         _applyButton = new Button
         {
             Content = "적용 및 닫기",
-            Width = 120,
-            Height = 32,
+            Width = 110,
+            Height = 30,
             Margin = new Thickness(0, 0, 8, 0),
             FontWeight = FontWeights.Bold
         };
@@ -345,8 +343,8 @@ public sealed class WorksetManagerWindow : Window
         var closeButton = new Button
         {
             Content = "닫기",
-            Width = 90,
-            Height = 32
+            Width = 80,
+            Height = 30
         };
         closeButton.Click += (s, e) => Close();
         buttonPanel.Children.Add(closeButton);
@@ -361,6 +359,16 @@ public sealed class WorksetManagerWindow : Window
 
         // 초기 화면 표시 및 요약 갱신
         RefreshDisplayedNodes();
+    }
+
+    private void OnTreeLineClicked(object sender, MouseButtonEventArgs e)
+    {
+        if (sender is TreeLineControl tlc && tlc.Node != null && tlc.Node.HasChildren)
+        {
+            tlc.Node.IsExpanded = !tlc.Node.IsExpanded;
+            RefreshDisplayedNodes(tlc.Node);
+            e.Handled = true;
+        }
     }
 
     private void OnGridMouseDoubleClick(object sender, MouseButtonEventArgs e)
@@ -467,15 +475,6 @@ public sealed class WorksetManagerWindow : Window
         {
             triggerNode.Parent?.RecomputeAggregatedWorkset();
             UpdateSummary();
-        }
-    }
-
-    private void OnToggleExpandClicked(object sender, RoutedEventArgs e)
-    {
-        if (sender is Button btn && btn.DataContext is WorksetHierarchyNode node && node.HasChildren)
-        {
-            node.IsExpanded = !node.IsExpanded;
-            RefreshDisplayedNodes(node);
         }
     }
 
@@ -687,7 +686,6 @@ public sealed class WorksetManagerWindow : Window
             return;
         }
 
-        // 단 1개의 Transaction으로 오류 관용적 일괄 처리 수행
         int successCount = 0;
         int skippedCount = 0;
 
