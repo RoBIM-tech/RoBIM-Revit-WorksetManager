@@ -3,8 +3,8 @@
   "modules": [
     {
       "id": "workset-manager",
-      "version": "0.1.0-test.9",
-      "channel": "test",
+      "version": "1.0.0",
+      "channel": "stable",
       "libraries": [
         {
           "id": "RoBIM.Common",
@@ -14,7 +14,12 @@
           "id": "RoBIM.Wpf",
           "version": "0.1.0"
         }
-      ]
+      ],
+      "validation": {
+        "by": "gagaggan",
+        "hostBuild": "Revit 2026.5 / 26.5.0.55",
+        "evidence": "https://github.com/RoBIM-tech/RoBIM-Revit-WorksetManager/blob/main/docs/releases/1.0.0.md"
+      }
     }
   ]
 }

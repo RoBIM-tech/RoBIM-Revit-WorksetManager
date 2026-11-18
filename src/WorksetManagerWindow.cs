@@ -56,8 +56,9 @@ public sealed class WorksetManagerWindow : Window
         var version = Assembly.GetExecutingAssembly()
             .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion.Split('+')[0]
             ?? Assembly.GetExecutingAssembly().GetName().Version?.ToString(3)
-            ?? "0.1.0-test.9";
-        Title = $"타입별 작업 세트 관리 · {version} · TEST";
+            ?? "1.0.0";
+        var isTest = version.Contains('-');
+        Title = isTest ? $"타입별 작업 세트 관리 · v{version} · TEST" : $"타입별 작업 세트 관리 · v{version}";
 
         Width = 1080;
         Height = 720;
