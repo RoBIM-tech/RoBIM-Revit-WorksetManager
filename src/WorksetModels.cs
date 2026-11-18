@@ -60,6 +60,19 @@ public sealed class WorksetHierarchyNode : INotifyPropertyChanged
 
     public bool IsLastSibling => Parent?.Children.LastOrDefault() == this;
 
+    public double TreeLineWidth => NodeType switch
+    {
+        HierarchyNodeType.Category => 18.0,
+        HierarchyNodeType.Family => 34.0,
+        _ => 44.0
+    };
+
+    public void NotifySiblingChanged()
+    {
+        OnPropertyChanged(nameof(IsLastSibling));
+        OnPropertyChanged(nameof(TreeLineWidth));
+    }
+
     public Brush RowBackground => Brushes.White;
 
     public FontWeight NodeFontWeight => NodeType switch
